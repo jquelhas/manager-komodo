@@ -1,0 +1,63 @@
+name: manager-komodo
+
+networks:
+  manager-komodo:
+    name: manager-komodo
+
+volumes:
+  stepca-data:
+
+services:
+  step-ca:
+    image: smallstep/step-ca:0.30.2         # última estável (2026-03-23)
+    container_name: manager-step-ca
+    restart: unless-stopped
+    networks: [manager-komodo]
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "${STEPCA_NAME}"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "step-ca,step-ca.apps.internal,localhost,127.0.0.1"
+      DOCKER_STEPCA_INIT_ACME: "true"
+      DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "true"
+      DOCKER_STEPCA_INIT_PASSWORD: "${STEPCA_INIT_PASSWORD}"
+    volumes:
+      - stepca-data:/home/step
+    # Escuta :9000 só na rede Docker — NÃO publicado no host.
+    healthcheck:
+      test: ["CMD", "step", "ca", "health", "--ca-url", "https://127.0.0.1:9000",
+              "--root", "/home/step/certs/root_ca.crt"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  traefik:
+    image: traefik:v3.7.7                    # última estável (2026-07-08)
+    container_name: manager-traefik
+    restart: unless-stopped
+    depends_on:
+      step-ca:
+        condition: service_healthy
+    networks: [manager-komodo]
+    ports:
+      - "0.0.0.0:443:443"                   # websecure-public
+      # ACTIVAR MAIS TARDE (quando o Tailscale for dono de 100.64.0.1):
+      # - "100.64.0.1:443:8443"             # websecure-internal, só mesh
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./docker/traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./docker/traefik/certs:/certs       # acme-*.json (Traefik cria a 600) + step-ca-root.crt
+
+  # PLACEHOLDER temporário: dá um serviço a que o router control.<domínio> aponta e que
+  # dispara a emissão LE. Substituído pelo Headscale num passo posterior.
+  whoami:
+    image: traefik/whoami:latest
+    container_name: manager-whoami-placeholder
+    restart: unless-stopped
+    networks: [manager-komodo]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.control.rule=Host(`${PUBLIC_DOMAIN}`)"
+      - "traefik.http.routers.control.entrypoints=websecure-public"
+      - "traefik.http.routers.control.tls.certresolver=le"
+      - "traefik.http.services.control.loadbalancer.server.port=80"

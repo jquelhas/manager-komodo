@@ -1,0 +1,55 @@
+## Traefik static configuration — manager-komodo control plane (Passo 4.1)
+## Dual entrypoint: público (Let's Encrypt) + interno (step-ca, activado no passo da mesh).
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+
+# Dashboard OFF — nada interno é publicado ainda; não expor publicamente.
+api:
+  dashboard: false
+
+entryPoints:
+  # PÚBLICO: publicado no host como 0.0.0.0:443 (ver docker-compose). Serve komodo.segcore.eu.
+  websecure-public:
+    address: ":443"
+  # INTERNO: escuta 0.0.0.0:8443 DENTRO do container apenas.
+  # NÃO publicado no host ao 4.1 (o IP Tailscale 100.64.0.1 ainda não existe).
+  # DEPOIS: acrescentar o port-publish "100.64.0.1:443:8443" no docker-compose.yml — sem tocar aqui.
+  websecure-internal:
+    address: ":8443"
+  # NOTA: sem entrypoint ":80" — porto 80 fechado no firewall; TLS-ALPN-01 só precisa do 443.
+
+certificatesResolvers:
+  # ---- PÚBLICO: Let's Encrypt via TLS-ALPN-01 (só 443, sem porto 80, sem API DNS) ----
+  le:
+    acme:
+      email: "admin@segcore.eu"
+      storage: /certs/acme-le.json
+      # Staging validado (2026-07-14); agora produção.
+      # caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+      caServer: https://acme-v02.api.letsencrypt.org/directory
+      tlsChallenge: {}
+
+  # ---- INTERNO: step-ca ACME (CONFIGURADO agora, exercitado num passo posterior) ----
+  stepca:
+    acme:
+      email: "admin@segcore.eu"
+      storage: /certs/acme-stepca.json
+      caServer: https://step-ca:9000/acme/acme/directory   # DNS da rede Docker
+      # Traefik tem de CONFIAR na raiz do step-ca para falar ACME sobre HTTPS.
+      # Este PEM é copiado do volume do step-ca após o primeiro arranque (ver bring-up).
+      caCertificates:
+        - /certs/step-ca-root.crt
+      tlsChallenge: {}   # step-ca valida via TLS-ALPN-01 no websecure-internal (mais tarde)
+
+providers:
+  docker:
+    exposedByDefault: false
+    network: manager-komodo
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
