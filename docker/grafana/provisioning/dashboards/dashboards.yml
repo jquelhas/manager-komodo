@@ -1,0 +1,14 @@
+# Grafana dashboard provisioning — load JSON dashboards from disk.
+# Folder structure on disk becomes Grafana folders (platform/, apps/<app>/).
+apiVersion: 1
+
+providers:
+  - name: 'default'
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

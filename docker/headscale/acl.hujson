@@ -1,0 +1,24 @@
+// Política de acessos da mesh (Headscale policy v2, HuJSON).
+// Chave-de-leitura: operador confiável (acesso total à sua mesh); manager com privilégio
+// mínimo (só as portas que precisa de scrape); hosts das apps não iniciam tráfego (default deny).
+// Nota v2: users são referenciados com sufixo "@" (ex.: "jferreira@"); sem "@" o headscale
+// crasha no arranque (invalid owner format). Onboarding de nodes: pôr os tags FORÇADOS na
+// pre-auth key (`preauthkeys create --tags tag:xxx`) e correr `tailscale up` SEM
+// `--advertise-tags` — a combinação dos dois faz o registo falhar ("tags not permitted").
+{
+  "tagOwners": {
+    "tag:operator": ["jferreira@"],
+    "tag:gims-app": ["jferreira@"],
+    "tag:manager":  ["jferreira@"],
+  },
+
+  "acls": [
+    // Operador (laptop) — acesso total à mesh (Grafana, Komodo UI, SSH aos hosts, BDs).
+    { "action": "accept", "src": ["tag:operator"], "dst": ["*:*"] },
+
+    // Manager (VictoriaMetrics, Komodo Core) — só /metrics + Periphery nos hosts das apps.
+    { "action": "accept", "src": ["tag:manager"], "dst": ["tag:gims-app:3000,9187,8120"] },
+
+    // Hosts das apps — sem tráfego entre si nem para o manager (default deny; sem regra).
+  ],
+}

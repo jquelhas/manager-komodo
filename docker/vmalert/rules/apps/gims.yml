@@ -1,0 +1,4 @@
+# GIMS recording rules (evaluated by vmalert, results written back to VM).
+# Migrated from the GIMS repo's recording-rules.yml. Empty until GIMS metrics
+# flow; add groups here (PromQL unchanged; add `host` to `by (...)` for per-host).
+groups: []

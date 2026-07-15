@@ -1,0 +1,73 @@
+# Headscale — coordenador WireGuard do control plane (manager-komodo)
+# Versão-alvo: headscale v0.29.2. Corre como container; o cliente Tailscale corre no host.
+
+# URL público a que os clientes Tailscale se ligam (via Traefik, entrypoint público).
+server_url: https://komodo.segcore.eu
+
+# Bind interno (só rede Docker; Traefik termina o TLS e faz proxy para aqui).
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 0.0.0.0:9090        # não publicado no host; scrape via mesh mais tarde
+grpc_listen_addr: 127.0.0.1:50443        # CLI usa o unix socket local; gRPC remoto desligado
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+# Espaço de IPs da mesh (decisão baseline: 100.64.0.0/16, CGNAT, sem risco de colisão).
+# allocation: sequential → o primeiro node (o manager) recebe 100.64.0.1, como o design assume.
+prefixes:
+  v4: 100.64.0.0/16
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+# DERP: sem servidor embebido; usa o mapa público da Tailscale como fallback de relay.
+# O plano de dados tenta primeiro ligação directa via 41641/udp.
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+  update_frequency: 24h
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+
+# MagicDNS: base_domain apps.internal; search domain apps.internal empurrado para todos os nodes.
+# Nodes resolvem <hostname>.apps.internal. Registos de serviço (grafana/komodo/vm/step-ca →
+# 100.64.0.1) são acrescentados em extra_records num passo posterior.
+dns:
+  magic_dns: true
+  base_domain: apps.internal
+  override_local_dns: true
+  nameservers:
+    global:
+      - 1.1.1.1
+      - 1.0.0.1
+  search_domains:
+    - apps.internal
+  # Registos de serviço → IP do manager (100.64.0.1). Todos os serviços de gestão vivem no
+  # manager atrás do entrypoint interno do Traefik. Acrescentar aqui à medida que sobem.
+  extra_records:
+    - name: "step-ca.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
+    - name: "vm.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
+    - name: "grafana.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
+    - name: "komodo.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
+
+# Política de acessos (ACLs) versionada em ficheiro.
+policy:
+  mode: file
+  path: /etc/headscale/acl.hujson
+
+log:
+  level: info
