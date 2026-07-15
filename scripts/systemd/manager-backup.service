@@ -1,0 +1,13 @@
+[Unit]
+Description=manager-komodo encrypted backup to S3
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=docker
+WorkingDirectory=/opt/manager-komodo
+ExecStart=/opt/manager-komodo/scripts/backup-manager.sh
+# Backup writes to a mktemp dir and needs docker + rclone + openssl on PATH.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
