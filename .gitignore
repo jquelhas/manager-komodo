@@ -1,3 +1,6 @@
 .env
 docker/traefik/certs/*
 !docker/traefik/certs/.gitkeep
+# Provisioning store holds short-lived per-host install scripts with baked one-shot keys.
+provisioning/store/*
+!provisioning/store/.gitkeep

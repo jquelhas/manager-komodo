@@ -90,7 +90,42 @@ services:
       - "traefik.http.routers.control.rule=Host(`${PUBLIC_DOMAIN}`)"
       - "traefik.http.routers.control.entrypoints=websecure-public"
       - "traefik.http.routers.control.tls.certresolver=le"
+      - "traefik.http.routers.control.priority=1"   # host-only; /provisioning (prio 100) wins
       - "traefik.http.services.control.loadbalancer.server.port=8080"
+
+  # Provisioning — one-time web delivery of host onboarding scripts (see add-host.sh).
+  # Public ONLY under /provisioning on the same domain (path router, priority > control).
+  # Non-root, read-only rootfs; only the store (per-host scripts with baked one-shot keys) is rw.
+  provisioning:
+    image: python:3.13-slim
+    container_name: manager-provisioning
+    restart: unless-stopped
+    networks: [manager-komodo]
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    command: ["python3", "/app/server.py"]
+    environment:
+      STORE_DIR: /store
+      LISTEN_PORT: "8000"
+      KOMODO_CORE_URL: "http://komodo-core:9120"
+      KOMODO_API_KEY: "${KOMODO_API_KEY}"
+      KOMODO_API_SECRET: "${KOMODO_API_SECRET}"
+    volumes:
+      - ./provisioning/server.py:/app/server.py:ro
+      - ./provisioning/store:/store         # rw: burn deletes entries
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.provisioning.rule=Host(`${PUBLIC_DOMAIN}`) && PathPrefix(`/provisioning`)"
+      - "traefik.http.routers.provisioning.entrypoints=websecure-public"
+      - "traefik.http.routers.provisioning.tls.certresolver=le"
+      - "traefik.http.routers.provisioning.priority=100"
+      - "traefik.http.routers.provisioning.middlewares=provisioning-ratelimit"
+      - "traefik.http.middlewares.provisioning-ratelimit.ratelimit.average=10"
+      - "traefik.http.middlewares.provisioning-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.provisioning-ratelimit.ratelimit.burst=5"
+      - "traefik.http.services.provisioning.loadbalancer.server.port=8000"
 
   # VictoriaMetrics — single-node TSDB + PromQL. Internal only (vm.apps.internal via step-ca).
   # Scrapes app hosts directly over the mesh; targets via file_sd.
