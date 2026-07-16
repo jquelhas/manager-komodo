@@ -1,4 +1,23 @@
-# GIMS recording rules (evaluated by vmalert, results written back to VM).
-# Migrated from the GIMS repo's recording-rules.yml. Empty until GIMS metrics
-# flow; add groups here (PromQL unchanged; add `host` to `by (...)` for per-host).
-groups: []
+# SEGCORE (gims) recording rules — evaluated by vmalert, written back to VictoriaMetrics.
+# Migrated from GIMSv2's recording-rules.yml. Only change vs the original: `host` added to each
+# `by(...)` so the recorded series are per-host (the fleet is multi-host now; the original was
+# single-host). Metric namespace stays `gims:` (dashboards reference it). Consumed by the
+# "SEGCORE — Regressões por Rota" dashboard.
+groups:
+  - name: segcore_http_latency
+    interval: 30s
+    rules:
+      - record: gims:http_req_rate_5m:by_route
+        expr: sum by (host, route, method) (rate(gims_http_requests_total[5m]))
+
+      - record: gims:http_5xx_rate_5m:by_route
+        expr: sum by (host, route, method) (rate(gims_http_requests_total{status_code=~"5.."}[5m]))
+
+      - record: gims:http_p50_5m:by_route
+        expr: histogram_quantile(0.50, sum by (host, route, method, le) (rate(gims_http_request_duration_seconds_bucket[5m])))
+
+      - record: gims:http_p95_5m:by_route
+        expr: histogram_quantile(0.95, sum by (host, route, method, le) (rate(gims_http_request_duration_seconds_bucket[5m])))
+
+      - record: gims:http_p99_5m:by_route
+        expr: histogram_quantile(0.99, sum by (host, route, method, le) (rate(gims_http_request_duration_seconds_bucket[5m])))
