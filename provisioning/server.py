@@ -75,6 +75,57 @@ def komodo_create_server(name, mesh_ip):
         return False, str(e)
 
 
+# --- Prometheus http_sd: derive scrape targets from the Komodo server list ---
+MESH_IP_ANY = re.compile(r"(100\.64\.\d{1,3}\.\d{1,3})")
+_SD_CACHE = {}  # port -> last good [ {targets, labels} ]
+_SD_LOCK = threading.Lock()
+
+
+def komodo_list_servers():
+    """Return the Komodo server list, or None on any failure."""
+    if not (KOMODO_API_KEY and KOMODO_API_SECRET):
+        return None
+    req = urllib.request.Request(
+        f"{KOMODO_CORE_URL}/read/ListServers",
+        data=b"{}",
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Api-Key": KOMODO_API_KEY,
+            "X-Api-Secret": KOMODO_API_SECRET,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def sd_targets(port):
+    """http_sd target groups for a given port, derived from Komodo servers whose address is a
+    mesh IP. Falls back to the last good result if Komodo is unreachable."""
+    servers = komodo_list_servers()
+    if servers is None:
+        with _SD_LOCK:
+            return _SD_CACHE.get(port, [])
+    groups = []
+    for s in servers:
+        addr = (s.get("info") or {}).get("address") or (s.get("config") or {}).get("address", "")
+        m = MESH_IP_ANY.search(addr or "")
+        if not m:
+            continue
+        groups.append(
+            {"targets": [f"{m.group(1)}:{port}"], "labels": {"app": "gims", "host": s.get("name", "")}}
+        )
+    with _SD_LOCK:
+        _SD_CACHE[port] = groups
+    return groups
+
+
+SD_PORTS = {"/sd/gims/backend": 3000, "/sd/gims/postgresql": 9187}
+
+
 def entry_dir(uuid: str):
     """Return the containment-checked entry dir for a validated uuid, or None."""
     if not UUID_RE.match(uuid):
@@ -142,6 +193,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # Prometheus http_sd (internal only — Traefik never routes /sd publicly).
+        if self.path in SD_PORTS:
+            body = json.dumps(sd_targets(SD_PORTS[self.path])).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         m = GET_RE.match(self.path)
         if not m:
             return self._404()

@@ -1,8 +1,0 @@
-# GIMS backend scrape targets — one entry per app host (backend binds ${WG_IP}:3000).
-# Populated as hosts join the mesh; VM re-reads automatically. Example:
-#   - targets: ['100.64.0.5:3000']
-#     labels:
-#       app: 'gims'
-#       host: 'gims-prod-1'
-#       provider: 'ovh'
-[]

@@ -137,12 +137,12 @@ services:
     command:
       - "-promscrape.config=/etc/victoriametrics/scrape.yml"
       - "-promscrape.configCheckInterval=30s"
+      - "-promscrape.httpSDCheckInterval=30s"   # how often http_sd (gims discovery) is refreshed
       - "-retentionPeriod=60d"
       - "-httpListenAddr=:8428"
     volumes:
       - victoriametrics-data:/victoria-metrics-data
       - ./docker/victoriametrics/scrape.yml:/etc/victoriametrics/scrape.yml:ro
-      - ./docker/prometheus-targets:/etc/prometheus-targets:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.vm.rule=Host(`vm.apps.internal`)"

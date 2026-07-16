@@ -1,7 +1,0 @@
-# GIMS postgres-exporter scrape targets — one entry per app host (binds ${WG_IP}:9187).
-# Populated as hosts join the mesh; VM re-reads automatically. Example:
-#   - targets: ['100.64.0.5:9187']
-#     labels:
-#       app: 'gims'
-#       host: 'gims-prod-1'
-[]

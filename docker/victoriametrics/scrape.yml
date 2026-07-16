@@ -1,7 +1,8 @@
 # VictoriaMetrics scrape configuration (Prometheus format).
 # Passed to VM via -promscrape.config; VM hot-reloads on change
-# (-promscrape.configCheckInterval). App-host targets use file_sd so adding a
-# host is just editing a target file — no VM restart.
+# (-promscrape.configCheckInterval). GIMS app-host targets are discovered dynamically via
+# http_sd from the provisioning service, which derives them from the Komodo server list — a
+# host is scraped as soon as it's a Komodo Server and drops off when removed (no manual targets).
 global:
   scrape_interval: 15s
 
@@ -15,13 +16,13 @@ scrape_configs:
     static_configs:
       - targets: ['vmalert:8880']
 
-  # GIMS app hosts — targets populated via file_sd as hosts join the mesh.
+  # GIMS app hosts — discovered from the Komodo server list via the provisioning service.
   - job_name: 'gims-backend'
     metrics_path: /metrics
     scrape_interval: 10s
-    file_sd_configs:
-      - files: ['/etc/prometheus-targets/apps/gims/backend.yml']
+    http_sd_configs:
+      - url: 'http://provisioning:8000/sd/gims/backend'
 
   - job_name: 'gims-postgresql'
-    file_sd_configs:
-      - files: ['/etc/prometheus-targets/apps/gims/postgresql.yml']
+    http_sd_configs:
+      - url: 'http://provisioning:8000/sd/gims/postgresql'

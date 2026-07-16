@@ -1,0 +1,962 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(255, 96, 96, 1)",
+        "name": "Deploys",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [
+            "deploy"
+          ],
+          "type": "tags"
+        }
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "text",
+      "id": 100,
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Como usar\n\nUse o **time picker** no topo do Grafana para escolher o dia a analisar. Sugestões: `Yesterday` (default), `Today so far`, ou ranges customizados como `now-2d/d to now-1d/d`.\n\nPara cada rota com tráfego ≥ ${min_req} req/dia, são mostradas 3 comparações de P95: **vs dia anterior (D-1)**, **vs mesmo dia da semana anterior (D-7)** e **vs duas semanas atrás (D-14)**. Valores positivos = piorou; negativos = melhorou."
+      },
+      "transparent": true
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Resumo — regressões > 30%",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "vs dia anterior (D-1)",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count((avg_over_time(gims:http_p95_5m:by_route[24h]) / avg_over_time(gims:http_p95_5m:by_route[24h] offset 1d) > 1.30) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)) or vector(0)",
+          "instant": true,
+          "legendFormat": "rotas",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "vs semana anterior (D-7)",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count((avg_over_time(gims:http_p95_5m:by_route[24h]) / avg_over_time(gims:http_p95_5m:by_route[24h] offset 7d) > 1.30) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)) or vector(0)",
+          "instant": true,
+          "legendFormat": "rotas",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "vs duas semanas atrás (D-14)",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count((avg_over_time(gims:http_p95_5m:by_route[24h]) / avg_over_time(gims:http_p95_5m:by_route[24h] offset 14d) > 1.30) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)) or vector(0)",
+          "instant": true,
+          "legendFormat": "rotas",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "Tabela — P95 do dia escolhido e Δ% para D-1, D-7, D-14",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "id": 4,
+      "title": "Comparação por rota",
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "left",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^P95.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^Δ%.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0
+                    },
+                    {
+                      "color": "orange",
+                      "value": 30
+                    },
+                    {
+                      "color": "red",
+                      "value": 100
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Req/dia"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Δ% vs D-7"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg_over_time(gims:http_p95_5m:by_route[24h]) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg_over_time(gims:http_p95_5m:by_route[24h] offset 1d) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg_over_time(gims:http_p95_5m:by_route[24h] offset 7d) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg_over_time(gims:http_p95_5m:by_route[24h] offset 14d) and on(route, method) (sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h])) >= $min_req)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (route, method) (increase(gims_http_requests_total{host=~\"$host\"}[24h]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "E"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "app": true,
+              "env": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "route": "Rota",
+              "method": "Method",
+              "Value #A": "P95 dia",
+              "Value #B": "P95 D-1",
+              "Value #C": "P95 D-7",
+              "Value #D": "P95 D-14",
+              "Value #E": "Req/dia"
+            }
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "P95 dia",
+              "operator": "-",
+              "right": "P95 D-1"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "_d1_diff",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "_d1_diff",
+              "operator": "/",
+              "right": "P95 D-1"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "_d1_ratio",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "_d1_ratio",
+              "operator": "*",
+              "right": "100"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "Δ% vs D-1",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "P95 dia",
+              "operator": "-",
+              "right": "P95 D-7"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "_d7_diff",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "_d7_diff",
+              "operator": "/",
+              "right": "P95 D-7"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "_d7_ratio",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "_d7_ratio",
+              "operator": "*",
+              "right": "100"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "Δ% vs D-7",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "P95 dia",
+              "operator": "-",
+              "right": "P95 D-14"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "_d14_diff",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "_d14_diff",
+              "operator": "/",
+              "right": "P95 D-14"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "_d14_ratio",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "binary": {
+              "left": "_d14_ratio",
+              "operator": "*",
+              "right": "100"
+            },
+            "reduce": {
+              "reducer": "sum"
+            },
+            "alias": "Δ% vs D-14",
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "_d1_diff": true,
+              "_d1_ratio": true,
+              "_d7_diff": true,
+              "_d7_ratio": true,
+              "_d14_diff": true,
+              "_d14_ratio": true
+            },
+            "indexByName": {
+              "Rota": 0,
+              "Method": 1,
+              "Req/dia": 2,
+              "P95 dia": 3,
+              "P95 D-1": 4,
+              "Δ% vs D-1": 5,
+              "P95 D-7": 6,
+              "Δ% vs D-7": 7,
+              "P95 D-14": 8,
+              "Δ% vs D-14": 9
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Evolução temporal (independente do dia escolhido)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "status-history",
+      "id": 5,
+      "title": "P95 por rota × dia — top 25 por volume (últimos 28 dias)",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.3
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "rowHeight": 0.9,
+        "showValue": "never",
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(25, avg_over_time(gims:http_p95_5m:by_route[1d]))",
+          "interval": "1d",
+          "legendFormat": "{{method}} {{route}}",
+          "refId": "A",
+          "timeRange": {
+            "from": "now-28d",
+            "to": "now"
+          }
+        }
+      ],
+      "timeFrom": "28d"
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Evolução P50/P95/P99 — rota: $route (últimas 4 semanas)",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "auto",
+            "pointSize": 4,
+            "spanNulls": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.3
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "gims:http_p50_5m:by_route{route=~\"$route\"}",
+          "legendFormat": "P50 {{method}} {{route}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "gims:http_p95_5m:by_route{route=~\"$route\"}",
+          "legendFormat": "P95 {{method}} {{route}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "gims:http_p99_5m:by_route{route=~\"$route\"}",
+          "legendFormat": "P99 {{method}} {{route}}",
+          "refId": "C"
+        }
+      ],
+      "timeFrom": "28d"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "segcore",
+    "performance",
+    "regressions"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{app=\"gims\"}, host)",
+        "query": {
+          "query": "label_values(up{app=\"gims\"}, host)",
+          "refId": "host"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "hide": 0
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(gims:http_p95_5m:by_route, route)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Rota",
+        "multi": true,
+        "name": "route",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(gims:http_p95_5m:by_route, route)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "10",
+          "value": "10"
+        },
+        "hide": 0,
+        "label": "Mín. req/dia",
+        "name": "min_req",
+        "query": "10",
+        "skipUrlSync": false,
+        "type": "constant"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1d/d",
+    "to": "now/d"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "1d",
+      "2d",
+      "7d",
+      "14d",
+      "30d",
+      "60d"
+    ]
+  },
+  "timezone": "Europe/Lisbon",
+  "title": "SEGCORE — Regressões por Rota",
+  "uid": "gims-regressoes-rotas",
+  "version": 2,
+  "weekStart": "monday"
+}

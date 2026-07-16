@@ -1,9 +1,16 @@
 # Grafana datasource provisioning — VictoriaMetrics (Prometheus-compatible).
 apiVersion: 1
 
+# Drop any pre-existing copy first so changing the uid reconciles cleanly.
+deleteDatasources:
+  - name: VictoriaMetrics
+    orgId: 1
+
 datasources:
   - name: VictoriaMetrics
     type: prometheus
+    # Fixed uid so the provisioned dashboards (which reference uid "prometheus") resolve.
+    uid: prometheus
     access: proxy
     url: http://victoriametrics:8428
     isDefault: true
