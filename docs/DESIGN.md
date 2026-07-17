@@ -360,7 +360,7 @@ O `bootstrap.sh` (servido pelo Traefik do control plane) faz:
 3. Instala cliente Tailscale (`curl -fsSL https://tailscale.com/install.sh | sh`) e liga à mesh:
    `tailscale up --login-server https://control.jose.tld --auth-key <pre-auth-key> --hostname gims-prod-1 --advertise-tags=tag:gims-app`
 4. Se `--role gims-app`: clona `--app-repo` para `/opt/gims`, copia `.env.example` para `.env`
-   (com `WG_IP`, `KOMODO_PASSKEY`, `GRAFANA_URL`, `GRAFANA_API_TOKEN` já preenchidos pelo
+   (com `LOCAL_BIND_IP`, `KOMODO_PASSKEY`, `GRAFANA_URL`, `GRAFANA_API_TOKEN` já preenchidos pelo
    bootstrap), aguarda o operador validar o `.env` e faz primeiro `./scripts/update.sh`.
 5. Confirma que o Periphery aparece healthy no Komodo Core.
 
@@ -373,8 +373,8 @@ necessárias, mas as chaves em si são únicas por host.
 Cada aplicação hospedada precisa de garantir, no seu próprio repo:
 
 1. `scripts/update.sh` — ponto de entrada de deploy idempotente (`git pull` + `docker compose` + migrações).
-2. `.env.example` com pelo menos: `WG_IP`, `GRAFANA_URL`, `GRAFANA_API_TOKEN`, `KOMODO_PASSKEY`, `HOSTNAME`.
-3. Backend expõe `/metrics` (formato Prometheus) num porto bindado em `${WG_IP}:PORT`.
+2. `.env.example` com pelo menos: `LOCAL_BIND_IP`, `GRAFANA_URL`, `GRAFANA_API_TOKEN`, `KOMODO_PASSKEY`, `HOSTNAME`.
+3. Backend expõe `/metrics` (formato Prometheus) num porto bindado em `${LOCAL_BIND_IP}:PORT`.
 4. Bloco de annotation no `update.sh` que faz POST a `${GRAFANA_URL}/api/annotations` com token.
 
 Registo de uma app nova no control plane:
@@ -404,7 +404,7 @@ periphery:
   container_name: gims-periphery
   restart: unless-stopped
   ports:
-    - "${WG_IP:?WG_IP não definido}:8120:8120"  # mesh-only
+    - "${LOCAL_BIND_IP:?LOCAL_BIND_IP não definido}:8120:8120"  # mesh-only
   environment:
     PERIPHERY_PASSKEYS: ${KOMODO_PASSKEY:?KOMODO_PASSKEY não definido}
   volumes:
@@ -420,11 +420,11 @@ Bindar backend e postgres-exporter no IP WireGuard:
 ```yaml
 backend:
   ports:
-    - "${WG_IP:?WG_IP não definido}:3000:3000"
+    - "${LOCAL_BIND_IP:?LOCAL_BIND_IP não definido}:3000:3000"
 
 postgres-exporter:
   ports:
-    - "${WG_IP}:9187:9187"
+    - "${LOCAL_BIND_IP}:9187:9187"
 ```
 
 Mover `mailpit` e `adminer` para `docker-compose.override.yml` (só dev local).
@@ -432,8 +432,9 @@ Mover `mailpit` e `adminer` para `docker-compose.override.yml` (só dev local).
 ### 2. `.env` novo por host
 
 ```bash
-# WireGuard IP do host (fixo, alocado pelo control plane)
-WG_IP=10.9.0.5
+# IP onde a app binda os serviços (métricas/exporter). Em produção = IP da mesh (interface
+# Tailscale, ex.: 100.64.0.x); em dev fora da mesh de controlo = localhost ou LAN interna.
+LOCAL_BIND_IP=100.64.0.5
 
 # Komodo Periphery — passkey partilhada com Komodo Core
 KOMODO_PASSKEY=<segredo>
@@ -553,7 +554,7 @@ um webhook directo (o backend GIMS já tem endpoint de webhook de alertas — re
 
 ## Mapa de portas WireGuard
 
-Tudo bindado em `${WG_IP}`, nunca em `0.0.0.0`:
+Tudo bindado em `${LOCAL_BIND_IP}`, nunca em `0.0.0.0`:
 
 | Porta | Serviço | Direcção |
 |-------|---------|----------|
@@ -587,12 +588,12 @@ Tudo bindado em `${WG_IP}`, nunca em `0.0.0.0`:
    - Apagar `prometheus`, `grafana`, `node-exporter`, `cadvisor`, `container-meta-exporter`,
      `netdata` do compose e do repo.
    - Adicionar `periphery` ao compose.
-   - Bindar backend e postgres-exporter em `${WG_IP}` (o IP alocado pelo Headscale — nome da
-     variável mantém-se `WG_IP` porque o data plane continua a ser WireGuard).
+   - Bindar backend e postgres-exporter em `${LOCAL_BIND_IP}` — em produção é o IP da mesh
+     (interface Tailscale); em dev fora da mesh de controlo pode ser localhost/LAN interna.
    - Alterar bloco de annotation do `update.sh`.
    - Apagar dashboards `host-metrics.json` e `docker-metrics.json` do repo (já migraram para
      `manager-komodo`).
-   - Actualizar `.env.example` com `WG_IP`, `KOMODO_PASSKEY`, `GRAFANA_URL`, `GRAFANA_API_TOKEN`.
+   - Actualizar `.env.example` com `LOCAL_BIND_IP`, `KOMODO_PASSKEY`, `GRAFANA_URL`, `GRAFANA_API_TOKEN`.
 10. **Criar Komodo Procedure** "Update GIMS host" → `cd /opt/gims && ./scripts/update.sh`.
 11. **Escrever `bootstrap.sh`** + endpoint `/setup-token` no Headscale/manager para libertar
     chaves mediante token válido, com rate limiting.

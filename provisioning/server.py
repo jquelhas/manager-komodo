@@ -45,16 +45,25 @@ MESH_IP_RE = re.compile(r"^100\.64\.\d{1,3}\.\d{1,3}$")
 NAME_BAD = re.compile(r"[^A-Za-z0-9._-]")
 
 
-def komodo_create_server(name, mesh_ip):
-    """Register the host as a Komodo Server (idempotent-ish). Returns (ok, detail)."""
+# App deploy config baked into auto-created Repo resources (SEGCORE defaults; env-overridable).
+APP_DEPLOY_ROLE = os.environ.get("APP_DEPLOY_ROLE", "gims-app")
+APP_GIT_PROVIDER = os.environ.get("APP_GIT_PROVIDER", "github.com")
+APP_GIT_ACCOUNT = os.environ.get("APP_GIT_ACCOUNT", "jquelhas")
+APP_GIT_REPO = os.environ.get("APP_GIT_REPO", "jquelhas/GIMSv2")
+APP_GIT_BRANCH = os.environ.get("APP_GIT_BRANCH", "main")
+APP_PATH = os.environ.get("APP_PATH", "/apps/GIMSv2")
+APP_ON_PULL = os.environ.get("APP_ON_PULL", "./scripts/update.sh")
+APP_TAG = os.environ.get("APP_TAG", "segcore")
+_TAG_ID = {}
+
+
+def komodo_api(path, body):
+    """POST to the Komodo API. Returns (status_int, parsed_or_text). status 0 = transport error."""
     if not (KOMODO_API_KEY and KOMODO_API_SECRET):
-        return False, "no Komodo API credentials configured"
-    body = json.dumps(
-        {"name": name, "config": {"address": f"https://{mesh_ip}:8120", "enabled": True}}
-    ).encode()
+        return 0, "no api creds"
     req = urllib.request.Request(
-        f"{KOMODO_CORE_URL}/write/CreateServer",
-        data=body,
+        f"{KOMODO_CORE_URL}/{path}",
+        data=json.dumps(body).encode(),
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -63,16 +72,90 @@ def komodo_create_server(name, mesh_ip):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return (200 <= r.status < 300), f"http {r.status}"
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read()
+            try:
+                return r.status, json.loads(raw or b"null")
+            except ValueError:
+                return r.status, raw.decode(errors="replace")
     except urllib.error.HTTPError as e:
-        detail = (e.read() or b"").decode(errors="replace").lower()
-        # A name clash means it is already registered — treat as success (idempotent).
-        if any(w in detail for w in ("exist", "duplicate", "taken", "unique")):
-            return True, "already registered"
-        return False, f"http {e.code}: {detail[:200]}"
+        return e.code, (e.read() or b"").decode(errors="replace")
     except Exception as e:  # noqa: BLE001
-        return False, str(e)
+        return 0, str(e)
+
+
+def _exists_err(detail):
+    return any(w in str(detail).lower() for w in ("exist", "duplicate", "taken", "unique"))
+
+
+def _oid(resp):
+    return resp.get("_id", {}).get("$oid") if isinstance(resp, dict) else None
+
+
+def komodo_find_id(list_path, name):
+    st, resp = komodo_api(list_path, {})
+    if isinstance(resp, list):
+        for r in resp:
+            if r.get("name") == name:
+                return r.get("id") or _oid(r)
+    return None
+
+
+def komodo_register_server(name, mesh_ip):
+    """Create the Server (idempotent). Returns (server_id or None, detail)."""
+    st, resp = komodo_api(
+        "write/CreateServer",
+        {"name": name, "config": {"address": f"https://{mesh_ip}:8120", "enabled": True}},
+    )
+    if _oid(resp):
+        return _oid(resp), "created"
+    if _exists_err(resp):
+        return komodo_find_id("read/ListServers", name), "already registered"
+    return None, f"http {st}: {str(resp)[:200]}"
+
+
+def komodo_ensure_tag(name):
+    if name in _TAG_ID:
+        return _TAG_ID[name]
+    st, resp = komodo_api("write/CreateTag", {"name": name})
+    tid = _oid(resp) or komodo_find_id("read/ListTags", name)
+    if tid:
+        _TAG_ID[name] = tid
+    return tid
+
+
+def komodo_register_repo(server_id, name):
+    """Create the per-host Repo (idempotent) + tag it. Returns (ok, detail).
+    Repo is named "<APP_TAG>-<host>" so both name-pattern (e.g. segcore-*) and tag batches work."""
+    repo_name = f"{APP_TAG}-{name}"
+    cfg = {
+        "server_id": server_id,
+        "git_provider": APP_GIT_PROVIDER,
+        "git_https": True,
+        "git_account": APP_GIT_ACCOUNT,
+        "repo": APP_GIT_REPO,
+        "branch": APP_GIT_BRANCH,
+        "path": APP_PATH,
+        "on_pull": {"path": "", "command": APP_ON_PULL, "shell_mode": True},
+        "webhook_enabled": False,
+    }
+    st, resp = komodo_api("write/CreateRepo", {"name": repo_name, "config": cfg})
+    ok = bool(_oid(resp)) or _exists_err(resp)
+    if not ok:
+        return False, f"http {st}: {str(resp)[:200]}"
+    tid = komodo_ensure_tag(APP_TAG)
+    if tid:
+        komodo_api("write/UpdateResourceMeta", {"target": {"type": "Repo", "id": repo_name}, "tags": [tid]})
+    return True, "created"
+
+
+def entry_role(uuid):
+    d = entry_dir(uuid)
+    try:
+        with open(os.path.join(d, "meta.json"), "r", encoding="utf-8") as f:
+            return json.load(f).get("role", "")
+    except (OSError, ValueError, TypeError):
+        return ""
 
 
 # --- Prometheus http_sd: derive scrape targets from the Komodo server list ---
@@ -246,20 +329,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             name = (NAME_BAD.sub("-", hostname).strip("-") or "host")[:64]
-            ok, detail = komodo_create_server(name, mesh_ip)
-            if ok:
-                burn(uuid)  # done: register succeeded, remove the link
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"registered\n")
-            else:
+            role = entry_role(uuid)
+            server_id, detail = komodo_register_server(name, mesh_ip)
+            if not server_id:
                 # Keep the link (TTL) so the operator can retry / add manually.
                 self.log_error("CreateServer failed: %s", detail)
                 self.send_response(502)
                 self.send_header("Content-Type", "text/plain")
                 self.end_headers()
                 self.wfile.write(b"registration failed\n")
+                return
+            msg = "registered server"
+            if role == APP_DEPLOY_ROLE:  # also create the per-host deploy Repo (+ tag)
+                ok, rdetail = komodo_register_repo(server_id, name)
+                msg += " + repo" if ok else f" (repo skipped: {rdetail})"
+                if not ok:
+                    self.log_error("CreateRepo failed: %s", rdetail)
+            burn(uuid)  # server registered — remove the link
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write((msg + "\n").encode())
             return
 
         self._404()

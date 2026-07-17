@@ -112,6 +112,14 @@ services:
       KOMODO_CORE_URL: "http://komodo-core:9120"
       KOMODO_API_KEY: "${KOMODO_API_KEY}"
       KOMODO_API_SECRET: "${KOMODO_API_SECRET}"
+      # Auto-created per-host deploy Repo (SEGCORE). Only for hosts onboarded with this role.
+      APP_DEPLOY_ROLE: "gims-app"
+      APP_GIT_ACCOUNT: "jquelhas"
+      APP_GIT_REPO: "jquelhas/GIMSv2"
+      APP_GIT_BRANCH: "main"
+      APP_PATH: "/apps/GIMSv2"
+      APP_ON_PULL: "./scripts/update.sh"
+      APP_TAG: "segcore"
     volumes:
       - ./provisioning/server.py:/app/server.py:ro
       - ./provisioning/store:/store         # rw: burn deletes entries
