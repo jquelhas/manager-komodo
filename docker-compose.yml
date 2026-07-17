@@ -11,6 +11,7 @@ volumes:
   alertmanager-data:
   alertmanager-config:   # holds the rendered alertmanager.yml (from .env via alertmanager-init)
   grafana-data:
+  headplane-data:
   komodo-postgres-data:
   komodo-ferretdb-state:
   komodo-core-keys:
@@ -39,6 +40,8 @@ services:
       - "vm.apps.internal:100.64.0.1"
       - "grafana.apps.internal:100.64.0.1"
       - "komodo.apps.internal:100.64.0.1"
+      - "headplane.apps.internal:100.64.0.1"
+      - "tailscale.apps.internal:100.64.0.1"
     # Escuta :9000 só na rede Docker — NÃO publicado no host.
     # Exposto na mesh via router TCP com TLS passthrough: os operadores fazem
     # `step ca bootstrap --ca-url https://step-ca.apps.internal` (a própria TLS do step-ca
@@ -94,6 +97,39 @@ services:
       - "traefik.http.routers.control.tls.certresolver=le"
       - "traefik.http.routers.control.priority=1"   # host-only; /provisioning (prio 100) wins
       - "traefik.http.services.control.loadbalancer.server.port=8080"
+      - "me.tale.headplane.target=headscale"        # lets Headplane discover this container
+
+
+  # Headplane — web UI for Headscale (node management). Internal only, reachable over the mesh at
+  # headplane.apps.internal / tailscale.apps.internal (step-ca cert). Docker integration OFF (see
+  # docker/headplane/config.yaml). Node ops via the Headscale HTTP API using HEADPLANE_API_KEY.
+  headplane:
+    image: ghcr.io/tale/headplane:0.7.0      # última estável (2026-07-04)
+    container_name: manager-headplane
+    restart: unless-stopped
+    depends_on: [headscale]
+    networks: [manager-komodo]
+    environment:
+      # v0.7: env overrides are always applied (HEADPLANE_<SECTION>__<KEY>); no enable flag needed.
+      HEADPLANE_SERVER__COOKIE_SECRET: "${HEADPLANE_COOKIE_SECRET}"
+      HEADPLANE_SERVER__BASE_URL: "${HEADPLANE_BASE_URL}"
+      HEADPLANE_HEADSCALE__API_KEY: "${HEADPLANE_API_KEY}"
+    volumes:
+      - ./docker/headplane/config.yaml:/etc/headplane/config.yaml:ro
+      - ./docker/headscale/config.yaml:/etc/headscale/config.yaml:ro   # read-only: display/validate
+      - ./docker/headscale/acl.hujson:/etc/headscale/acl.hujson        # rw: UI edits the ACL policy
+      - /var/run/docker.sock:/var/run/docker.sock:ro                   # discover + reload headscale
+      - headplane-data:/var/lib/headplane
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.headplane.rule=Host(`headplane.apps.internal`) || Host(`tailscale.apps.internal`)"
+      - "traefik.http.routers.headplane.entrypoints=websecure-internal"
+      - "traefik.http.routers.headplane.tls.certresolver=stepca"
+      - "traefik.http.routers.headplane.middlewares=headplane-toadmin"
+      # Headplane serves under /admin; redirect the bare host root there for convenience.
+      - "traefik.http.middlewares.headplane-toadmin.redirectregex.regex=^(https://[^/]+)/?$$"
+      - "traefik.http.middlewares.headplane-toadmin.redirectregex.replacement=$${1}/admin"
+      - "traefik.http.services.headplane.loadbalancer.server.port=3000"
 
   # Provisioning — one-time web delivery of host onboarding scripts (see add-host.sh).
   # Public ONLY under /provisioning on the same domain (path router, priority > control).

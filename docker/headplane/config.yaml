@@ -1,0 +1,30 @@
+# Headplane — web UI for Headscale. Node management only.
+#
+# Docker integration is OFF by design: (1) it would need the docker.sock mounted into an internal
+# web UI, and (2) the ACL policy is infra-as-code in ./docker/headscale/acl.hujson — editing it via
+# the UI would drift from the repo. So Headplane manages nodes (list/rename/tags/routes/expire) via
+# the Headscale API; ACL/DNS stay git-managed (edit the file + `docker compose restart headscale`).
+#
+# Deployment/secret values come from .env via HEADPLANE_* env overrides
+# (HEADPLANE_LOAD_ENV_OVERRIDES=true): server.cookie_secret, server.base_url, headscale.api_key.
+server:
+  host: 0.0.0.0
+  port: 3000
+  cookie_secure: true                    # served over HTTPS (Traefik internal entrypoint + step-ca)
+  data_path: /var/lib/headplane
+
+headscale:
+  url: http://manager-headscale:8080     # Headscale HTTP API (not gRPC), Docker-network internal
+  config_path: /etc/headscale/config.yaml
+  config_strict: false                   # don't hard-fail on headscale config keys Headplane ignores
+
+# Docker integration ON: lets Headplane discover the Headscale container (by label) and reload it
+# after policy changes, enabling ACL editing from the UI. Needs the docker socket mounted and the
+# policy file (acl.hujson) mounted read-write in this container. Trade-off: docker.sock access from
+# a web UI (mitigated: internal-only over the mesh). Note: ACL edits land in ./docker/headscale/
+# acl.hujson in the repo working tree — commit them so the git source of truth stays in sync.
+integration:
+  docker:
+    enabled: true
+    container_label: me.tale.headplane.target=headscale
+    socket: unix:///var/run/docker.sock
