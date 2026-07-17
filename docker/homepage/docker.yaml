@@ -1,0 +1,1 @@
+# No Docker integration — services are declared statically in services.yaml (no docker.sock mount).

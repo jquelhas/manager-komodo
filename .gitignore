@@ -4,3 +4,6 @@ docker/traefik/certs/*
 # Provisioning store holds short-lived per-host install scripts with baked one-shot keys.
 provisioning/store/*
 !provisioning/store/.gitkeep
+
+# Homepage runtime logs + auto-generated defaults
+docker/homepage/logs/

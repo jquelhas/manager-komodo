@@ -69,6 +69,15 @@ dns:
     - name: "tailscale.apps.internal"
       type: "A"
       value: "100.64.0.1"
+    - name: "home.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
+    - name: "alertmanager.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
+    - name: "vmalert.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
 
 # Política de acessos (ACLs) versionada em ficheiro.
 policy:

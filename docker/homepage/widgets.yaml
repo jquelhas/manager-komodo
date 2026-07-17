@@ -1,0 +1,4 @@
+# Header widgets. Kept minimal (no internet-dependent widgets — this page is internal only).
+- greeting:
+    text_size: xl
+    text: Manager · SEGCORE

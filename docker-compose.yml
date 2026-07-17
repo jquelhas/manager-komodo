@@ -42,6 +42,9 @@ services:
       - "komodo.apps.internal:100.64.0.1"
       - "headplane.apps.internal:100.64.0.1"
       - "tailscale.apps.internal:100.64.0.1"
+      - "home.apps.internal:100.64.0.1"
+      - "alertmanager.apps.internal:100.64.0.1"
+      - "vmalert.apps.internal:100.64.0.1"
     # Escuta :9000 só na rede Docker — NÃO publicado no host.
     # Exposto na mesh via router TCP com TLS passthrough: os operadores fazem
     # `step ca bootstrap --ca-url https://step-ca.apps.internal` (a própria TLS do step-ca
@@ -131,6 +134,25 @@ services:
       - "traefik.http.middlewares.headplane-toadmin.redirectregex.replacement=$${1}/admin"
       - "traefik.http.services.headplane.loadbalancer.server.port=3000"
 
+  # Homepage — landing page linking every web-manageable service. Internal only (home.apps.internal
+  # via step-ca). Static config in docker/homepage/*.yaml (no docker.sock). v1 requires
+  # HOMEPAGE_ALLOWED_HOSTS. siteMonitor pings each service over the internal Docker network (http).
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v1.13.2   # última estável (2026)
+    container_name: manager-homepage
+    restart: unless-stopped
+    networks: [manager-komodo]
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: "home.apps.internal"
+    volumes:
+      - ./docker/homepage:/app/config
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.homepage.rule=Host(`home.apps.internal`)"
+      - "traefik.http.routers.homepage.entrypoints=websecure-internal"
+      - "traefik.http.routers.homepage.tls.certresolver=stepca"
+      - "traefik.http.services.homepage.loadbalancer.server.port=3000"
+
   # Provisioning — one-time web delivery of host onboarding scripts (see add-host.sh).
   # Public ONLY under /provisioning on the same domain (path router, priority > control).
   # Non-root, read-only rootfs; only the store (per-host scripts with baked one-shot keys) is rw.
@@ -213,8 +235,15 @@ services:
       - "-rule=/etc/vmalert/rules/platform/*.yml"
       - "-configCheckInterval=30s"   # hot-reload rule files on change
       - "-httpListenAddr=:8880"
+      - "-external.url=https://vmalert.apps.internal"   # correct absolute links in the vmalert UI
     volumes:
       - ./docker/vmalert/rules:/etc/vmalert/rules:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vmalert.rule=Host(`vmalert.apps.internal`)"
+      - "traefik.http.routers.vmalert.entrypoints=websecure-internal"
+      - "traefik.http.routers.vmalert.tls.certresolver=stepca"
+      - "traefik.http.services.vmalert.loadbalancer.server.port=8880"
 
   # alertmanager-init — renders the config template with the SMTP_* / ALERT_EMAIL_TO vars from .env
   # (Alertmanager can't expand env itself) into the shared config volume, then exits. Reuses the
@@ -239,7 +268,7 @@ services:
       - "import os; open('/out/alertmanager.yml','w').write(os.path.expandvars(open('/tmpl.yml').read()))"
 
   # Alertmanager — single notification hub (SMTP). Receives app alerts from vmalert and infra
-  # alerts from Komodo (via the provisioning /alert/komodo relay). Internal only (no Traefik route).
+  # alerts from Komodo (via the provisioning /alert/komodo relay). UI at alertmanager.apps.internal.
   alertmanager:
     image: prom/alertmanager:v0.28.1               # latest stable (2025)
     container_name: manager-alertmanager
@@ -251,9 +280,16 @@ services:
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
+      - "--web.external-url=https://alertmanager.apps.internal"   # correct links in UI/notifications
     volumes:
       - alertmanager-config:/etc/alertmanager:ro
       - alertmanager-data:/alertmanager
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.alertmanager.rule=Host(`alertmanager.apps.internal`)"
+      - "traefik.http.routers.alertmanager.entrypoints=websecure-internal"
+      - "traefik.http.routers.alertmanager.tls.certresolver=stepca"
+      - "traefik.http.services.alertmanager.loadbalancer.server.port=9093"
 
   # Grafana — central dashboards. Internal only (grafana.apps.internal via step-ca).
   grafana:

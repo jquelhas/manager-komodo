@@ -1,0 +1,13 @@
+# Homepage — landing page for the control plane's web UIs. Internal only (home.apps.internal).
+title: Manager · SEGCORE
+theme: dark
+color: slate
+headerStyle: clean
+disableUpdateCheck: true          # internal-only; no outbound update pings
+layout:
+  Control plane:
+    style: row
+    columns: 2
+  Observability:
+    style: row
+    columns: 4
