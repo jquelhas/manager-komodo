@@ -34,19 +34,24 @@ KOMODO_CORE_URL = os.environ.get("KOMODO_CORE_URL", "http://komodo-core:9120").r
 KOMODO_API_KEY = os.environ.get("KOMODO_API_KEY", "")
 KOMODO_API_SECRET = os.environ.get("KOMODO_API_SECRET", "")
 
+# Alertmanager — the single notification hub (SMTP). Komodo has no native e-mail endpoint, so its
+# Custom alerter POSTs here (/alert/komodo, internal only) and we relay to Alertmanager's v2 API.
+ALERTMANAGER_URL = os.environ.get("ALERTMANAGER_URL", "http://alertmanager:9093").rstrip("/")
+
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 GET_RE = re.compile(r"^/provisioning/([^/]+)/install\.sh$")
 BURN_RE = re.compile(r"^/provisioning/([^/]+)/burn$")
 COMPLETE_RE = re.compile(r"^/provisioning/([^/]+)/complete$")
+ALERT_RE = re.compile(r"^/alert/komodo$")  # internal only (Traefik routes /provisioning only)
 # mesh_ip is used to build the Server address Core will dial — only accept our mesh range.
 MESH_IP_RE = re.compile(r"^100\.64\.\d{1,3}\.\d{1,3}$")
 NAME_BAD = re.compile(r"[^A-Za-z0-9._-]")
 
 
 # App deploy config baked into auto-created Repo resources (SEGCORE defaults; env-overridable).
-APP_DEPLOY_ROLE = os.environ.get("APP_DEPLOY_ROLE", "gims-app")
+APP_DEPLOY_ROLE = os.environ.get("APP_DEPLOY_ROLE", "segcore")
 APP_GIT_PROVIDER = os.environ.get("APP_GIT_PROVIDER", "github.com")
 APP_GIT_ACCOUNT = os.environ.get("APP_GIT_ACCOUNT", "jquelhas")
 APP_GIT_REPO = os.environ.get("APP_GIT_REPO", "jquelhas/GIMSv2")
@@ -127,7 +132,7 @@ def komodo_ensure_tag(name):
 def komodo_register_repo(server_id, name):
     """Create the per-host Repo (idempotent) + tag it. Returns (ok, detail).
     Repo is named "<APP_TAG>-<host>" so both name-pattern (e.g. segcore-*) and tag batches work."""
-    repo_name = f"{APP_TAG}-{name}"
+    repo_name = name if name.startswith(f"{APP_TAG}-") else f"{APP_TAG}-{name}"
     cfg = {
         "server_id": server_id,
         "git_provider": APP_GIT_PROVIDER,
@@ -207,6 +212,73 @@ def sd_targets(port):
 
 
 SD_PORTS = {"/sd/gims/backend": 3000, "/sd/gims/postgresql": 9187}
+
+
+# --- Komodo -> Alertmanager relay ---
+# Komodo's Custom alerter POSTs the serialized Alert. We map it to an Alertmanager v2 alert and
+# forward it, so infra alerts (server unreachable, cpu/mem/disk, container state) land in the same
+# inbox as the app (vmalert) alerts. Kept deliberately tolerant of Komodo's exact JSON shape.
+_LEVEL_SEVERITY = {"Critical": "critical", "Warning": "warning", "Ok": "info"}
+
+
+def _rfc3339(epoch_s):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch_s))
+
+
+def komodo_alert_to_am(payload):
+    """Map a Komodo Alert dict to a single Alertmanager v2 alert (as a 1-item list)."""
+    if not isinstance(payload, dict):
+        return []
+    level = str(payload.get("level", "Warning"))
+    resolved = bool(payload.get("resolved"))
+    data = payload.get("data") or {}
+    dtype = str(data.get("type") or "KomodoAlert")
+    ddata = data.get("data") if isinstance(data.get("data"), dict) else {}
+    target = payload.get("target") or {}
+    server = str(ddata.get("name") or target.get("id") or "unknown")
+    # Human-readable one-liner from whatever fields the variant carries.
+    detail = ", ".join(
+        f"{k}={v}" for k, v in ddata.items() if k not in ("id", "name") and not isinstance(v, (dict, list))
+    )
+    ts = payload.get("ts")
+    starts = _rfc3339(ts / 1000.0) if isinstance(ts, (int, float)) else _rfc3339(time.time())
+    # Active alerts get a far-future endsAt so Alertmanager doesn't auto-resolve between Komodo's
+    # state-change POSTs; a resolve POST sets endsAt=now to clear it.
+    ends = _rfc3339(time.time()) if resolved else _rfc3339(time.time() + 6 * 3600)
+    return [{
+        "labels": {
+            "alertname": f"Komodo{dtype}",
+            "severity": _LEVEL_SEVERITY.get(level, "warning"),
+            "source": "komodo",
+            "type": dtype,
+            "server": server,
+        },
+        "annotations": {
+            "summary": f"{dtype} on {server} ({level})",
+            "description": detail or f"Komodo alert {dtype} on {server}.",
+        },
+        "startsAt": starts,
+        "endsAt": ends,
+    }]
+
+
+def post_alertmanager(alerts):
+    """POST alerts to Alertmanager's v2 API. Returns (ok, detail)."""
+    if not alerts:
+        return True, "nothing to send"
+    req = urllib.request.Request(
+        f"{ALERTMANAGER_URL}/api/v2/alerts",
+        data=json.dumps(alerts).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return 200 <= r.status < 300, f"http {r.status}"
+    except urllib.error.HTTPError as e:
+        return False, f"http {e.code}: {(e.read() or b'').decode(errors='replace')[:200]}"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
 
 
 def entry_dir(uuid: str):
@@ -307,6 +379,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return {}
 
     def do_POST(self):
+        # Komodo Custom alerter -> Alertmanager relay (internal only).
+        if ALERT_RE.match(self.path):
+            payload = self._json_body()
+            ok, detail = post_alertmanager(komodo_alert_to_am(payload))
+            if not ok:
+                self.log_error("alert relay failed: %s", detail)
+            self.send_response(200 if ok else 502)
+            self.end_headers()
+            return
+
         mb = BURN_RE.match(self.path)
         if mb:
             if not burn(mb.group(1)):

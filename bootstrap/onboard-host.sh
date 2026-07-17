@@ -13,7 +13,7 @@
 # Target OS: Ubuntu/Debian minimal (apt). Run as root (sudo).
 #
 # Usage:
-#   sudo ./onboard-host.sh --auth-key <hskey-...> --hostname <name> [--role gims-app] [--check]
+#   sudo ./onboard-host.sh --auth-key <hskey-...> --hostname <name> [--role segcore] [--check]
 #
 #   --check   Run PREFLIGHT only and report feasibility. Makes no changes.
 #
@@ -62,7 +62,7 @@ done
 
 # Env-var fallbacks (explicit flags win). Lets the web-delivered preamble drive it with no args.
 AUTH_KEY="${AUTH_KEY:-${KOMODO_AUTH_KEY:-}}"
-ROLE="${ROLE:-${KOMODO_ROLE:-gims-app}}"
+ROLE="${ROLE:-${KOMODO_ROLE:-segcore}}"
 TAG="tag:${ROLE}"
 
 # Interactive hostname prompt (default $(hostname)) when not provided and we have a terminal.

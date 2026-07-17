@@ -1,0 +1,63 @@
+# SEGCORE (gims) ALERTING rules — evaluated by vmalert, sent to Alertmanager (-notifier.url).
+# App-level alerts only; infra (host unreachable, cpu/mem/disk, container state) is Komodo's job.
+# The 5xx/latency alerts reuse the recording rules in gims.yml, so they must stay in sync.
+groups:
+  - name: segcore_availability
+    interval: 30s
+    rules:
+      - alert: SegcoreBackendDown
+        expr: up{job="gims-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          app: segcore
+        annotations:
+          summary: "SEGCORE backend down on {{ $labels.host }}"
+          description: "The backend metrics endpoint has been unreachable (up=0) for 2m on host {{ $labels.host }}."
+
+      - alert: SegcorePostgresExporterDown
+        expr: up{job="gims-postgresql"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          app: segcore
+        annotations:
+          summary: "SEGCORE postgres-exporter down on {{ $labels.host }}"
+          description: "postgres-exporter has been unreachable (up=0) for 5m on host {{ $labels.host }}."
+
+  - name: segcore_http
+    interval: 30s
+    rules:
+      - alert: SegcoreHigh5xxRate
+        expr: |
+          sum by (host) (gims:http_5xx_rate_5m:by_route)
+            / clamp_min(sum by (host) (gims:http_req_rate_5m:by_route), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          app: segcore
+        annotations:
+          summary: "SEGCORE 5xx rate above 5% on {{ $labels.host }}"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over the last 5m on host {{ $labels.host }}."
+
+      - alert: SegcoreHigh5xxRateCritical
+        expr: |
+          sum by (host) (gims:http_5xx_rate_5m:by_route)
+            / clamp_min(sum by (host) (gims:http_req_rate_5m:by_route), 0.001) > 0.20
+        for: 5m
+        labels:
+          severity: critical
+          app: segcore
+        annotations:
+          summary: "SEGCORE 5xx rate above 20% on {{ $labels.host }}"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over the last 5m on host {{ $labels.host }}."
+
+      - alert: SegcoreHighLatencyP95
+        expr: max by (host) (gims:http_p95_5m:by_route) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+          app: segcore
+        annotations:
+          summary: "SEGCORE p95 latency high on {{ $labels.host }}"
+          description: "Worst-route p95 latency is {{ $value }}s (threshold 1.5s) for 10m on host {{ $labels.host }}."

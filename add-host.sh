@@ -11,14 +11,14 @@
 # https://<domain>/provisioning/<uuid>/install.sh and the host burns it on completion; a TTL
 # is the backstop. The UUID URL is the capability/secret.
 #
-# Usage: ./add-host.sh [--role gims-app] [--ttl 5m] [--hostname-default <name>]
+# Usage: ./add-host.sh [--role segcore] [--ttl 5m] [--hostname-default <name>]
 #                      [--login-server <url>] [--core-pubkey <b64>] [--periphery-version <vX>]
 
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
-ROLE="gims-app"
+ROLE="segcore"
 TTL="5m"
 HOSTNAME_DEFAULT=""
 LOGIN_SERVER="https://komodo.segcore.eu"

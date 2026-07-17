@@ -1,0 +1,16 @@
+# Control-plane platform ALERTING rules — evaluated by vmalert, sent to Alertmanager.
+# Covers the manager's own metrics stack. App-host infra is Komodo's job; app KPIs live in apps/.
+groups:
+  - name: platform_selfmon
+    interval: 30s
+    rules:
+      - alert: ControlPlaneTargetDown
+        # Any self-monitored control-plane target (victoriametrics, vmalert) unreachable.
+        expr: up{job=~"victoriametrics|vmalert"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          scope: platform
+        annotations:
+          summary: "Control-plane target {{ $labels.job }} is down"
+          description: "{{ $labels.job }} ({{ $labels.instance }}) has been unreachable (up=0) for 5m."

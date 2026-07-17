@@ -8,7 +8,8 @@
 {
   "tagOwners": {
     "tag:operator": ["jferreira@"],
-    "tag:gims-app": ["jferreira@"],
+    // One tag per app (tag name = app name). Add a new tag + a manager rule per new app.
+    "tag:segcore":  ["jferreira@"],
     "tag:manager":  ["jferreira@"],
   },
 
@@ -17,7 +18,8 @@
     { "action": "accept", "src": ["tag:operator"], "dst": ["*:*"] },
 
     // Manager (VictoriaMetrics, Komodo Core) — só /metrics + Periphery nos hosts das apps.
-    { "action": "accept", "src": ["tag:manager"], "dst": ["tag:gims-app:3000,9187,8120"] },
+    // One rule per app tag (ports: backend /metrics, postgres-exporter, Komodo periphery).
+    { "action": "accept", "src": ["tag:manager"], "dst": ["tag:segcore:3000,9187,8120"] },
 
     // Hosts das apps — sem tráfego entre si nem para o manager (default deny; sem regra).
   ],
