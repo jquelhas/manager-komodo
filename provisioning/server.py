@@ -281,6 +281,103 @@ def post_alertmanager(alerts):
         return False, str(e)
 
 
+# --- Per-container metrics exporter: reuse the stats Komodo/Periphery already collects ---
+# Komodo's read/ListDockerContainers returns each container's `stats` (the docker-stats snapshot:
+# cpu_perc, mem_perc, mem_usage, net_io, block_io, pids). We translate that to Prometheus so VM can
+# scrape it — no cAdvisor/agent on the hosts. Values are unit strings, so we parse them to numbers.
+_SIZE_RE = re.compile(r"([0-9.]+)\s*([A-Za-z]+)")
+_UNITS = {
+    "B": 1.0, "kB": 1e3, "KB": 1e3, "KiB": 1024.0, "MB": 1e6, "MiB": 1024.0 ** 2,
+    "GB": 1e9, "GiB": 1024.0 ** 3, "TB": 1e12, "TiB": 1024.0 ** 4, "PB": 1e15, "PiB": 1024.0 ** 5,
+}
+
+
+def _size(s):
+    m = _SIZE_RE.search(s or "")
+    return float(m.group(1)) * _UNITS.get(m.group(2), 1.0) if m else None
+
+
+def _pair(s):
+    parts = (s or "").split("/")
+    return (_size(parts[0]), _size(parts[1])) if len(parts) == 2 else (None, None)
+
+
+def _pct(s):
+    try:
+        return float(str(s).replace("%", "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def _lbl(v):
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "")
+
+
+def komodo_list_containers(server_name):
+    _st, resp = komodo_api("read/ListDockerContainers", {"server": server_name})
+    return resp if isinstance(resp, list) else None
+
+
+_CONTAINER_FAMILIES = [
+    ("komodo_container_running", "gauge", "1 if the container state is running"),
+    ("komodo_container_cpu_percent", "gauge", "CPU usage percent (docker stats via Komodo Periphery)"),
+    ("komodo_container_mem_percent", "gauge", "Memory usage percent"),
+    ("komodo_container_mem_used_bytes", "gauge", "Memory used in bytes"),
+    ("komodo_container_mem_limit_bytes", "gauge", "Memory limit in bytes"),
+    ("komodo_container_pids", "gauge", "Number of PIDs"),
+    ("komodo_container_net_receive_bytes_total", "counter", "Network bytes received (cumulative)"),
+    ("komodo_container_net_transmit_bytes_total", "counter", "Network bytes transmitted (cumulative)"),
+    ("komodo_container_block_read_bytes_total", "counter", "Block I/O bytes read (cumulative)"),
+    ("komodo_container_block_write_bytes_total", "counter", "Block I/O bytes written (cumulative)"),
+]
+
+
+def container_metrics_text():
+    """Prometheus exposition of per-container stats across all Komodo servers."""
+    samples = {name: [] for name, _t, _h in _CONTAINER_FAMILIES}
+    servers = komodo_list_servers() or []
+    for s in servers:
+        host = s.get("name", "")
+        conts = komodo_list_containers(host)
+        if not isinstance(conts, list):
+            continue  # server unreachable / no data — skip
+        for c in conts:
+            name = c.get("name", "")
+            lbl = f'host="{_lbl(host)}",name="{_lbl(name)}"'
+            samples["komodo_container_running"].append((lbl, 1 if c.get("state") == "running" else 0))
+            st = c.get("stats") or {}
+            if not isinstance(st, dict):
+                continue
+
+            def add(metric, val):
+                if val is not None:
+                    samples[metric].append((lbl, val))
+
+            add("komodo_container_cpu_percent", _pct(st.get("cpu_perc")))
+            add("komodo_container_mem_percent", _pct(st.get("mem_perc")))
+            used, limit = _pair(st.get("mem_usage"))
+            add("komodo_container_mem_used_bytes", used)
+            add("komodo_container_mem_limit_bytes", limit)
+            try:
+                add("komodo_container_pids", int(st.get("pids")))
+            except (ValueError, TypeError):
+                pass
+            rx, tx = _pair(st.get("net_io"))
+            add("komodo_container_net_receive_bytes_total", rx)
+            add("komodo_container_net_transmit_bytes_total", tx)
+            rd, wr = _pair(st.get("block_io"))
+            add("komodo_container_block_read_bytes_total", rd)
+            add("komodo_container_block_write_bytes_total", wr)
+
+    out = []
+    for name, typ, help_ in _CONTAINER_FAMILIES:
+        out.append(f"# HELP {name} {help_}")
+        out.append(f"# TYPE {name} {typ}")
+        for lbl, val in samples[name]:
+            out.append(f"{name}{{{lbl}}} {val}")
+    return "\n".join(out) + "\n"
+
+
 def entry_dir(uuid: str):
     """Return the containment-checked entry dir for a validated uuid, or None."""
     if not UUID_RE.match(uuid):
@@ -348,6 +445,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        # Per-container metrics exporter (internal only; VM scrapes it). Reuses Komodo stats.
+        if self.path == "/metrics/containers":
+            body = container_metrics_text().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         # Prometheus http_sd (internal only — Traefik never routes /sd publicly).
         if self.path in SD_PORTS:
             body = json.dumps(sd_targets(SD_PORTS[self.path])).encode()

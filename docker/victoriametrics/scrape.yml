@@ -26,3 +26,13 @@ scrape_configs:
   - job_name: 'gims-postgresql'
     http_sd_configs:
       - url: 'http://provisioning:8000/sd/gims/postgresql'
+
+  # Per-container metrics — one central exporter on the provisioning service that translates the
+  # per-container stats Komodo/Periphery already collects (read/ListDockerContainers) into Prometheus.
+  # No agent on the hosts. One target; the exporter fans out to every Komodo server internally.
+  - job_name: 'komodo-containers'
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    metrics_path: /metrics/containers
+    static_configs:
+      - targets: ['provisioning:8000']
