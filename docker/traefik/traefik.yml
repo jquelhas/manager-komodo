@@ -48,6 +48,8 @@ certificatesResolvers:
 
 providers:
   docker:
+    # Read-only Docker API via socket-proxy (no raw docker.sock mounted in Traefik).
+    endpoint: "tcp://socket-proxy:2375"
     exposedByDefault: false
     network: manager-komodo
   file:

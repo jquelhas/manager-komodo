@@ -18,13 +18,6 @@ headscale:
   config_path: /etc/headscale/config.yaml
   config_strict: false                   # don't hard-fail on headscale config keys Headplane ignores
 
-# Docker integration ON: lets Headplane discover the Headscale container (by label) and reload it
-# after policy changes, enabling ACL editing from the UI. Needs the docker socket mounted and the
-# policy file (acl.hujson) mounted read-write in this container. Trade-off: docker.sock access from
-# a web UI (mitigated: internal-only over the mesh). Note: ACL edits land in ./docker/headscale/
-# acl.hujson in the repo working tree — commit them so the git source of truth stays in sync.
-integration:
-  docker:
-    enabled: true
-    container_label: me.tale.headplane.target=headscale
-    socket: unix:///var/run/docker.sock
+# No `integration:` block on purpose (security): mounting docker.sock into a web UI would make a
+# Headplane compromise root-equivalent on the host. Node management (list/rename/tags/routes/expire)
+# works via the Headscale API alone; ACL/DNS stay git-managed (edit acl.hujson + restart headscale).

@@ -64,6 +64,23 @@ services:
       retries: 6
       start_period: 20s
 
+  # docker-socket-proxy — read-only Docker API in front of Traefik. Traefik never touches the raw
+  # socket, so a Traefik compromise can't reach root via docker.sock. Only read endpoints proxied.
+  socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:v0.4.2   # última estável (2026)
+    container_name: manager-socket-proxy
+    restart: unless-stopped
+    networks: [manager-komodo]
+    environment:
+      CONTAINERS: "1"     # Traefik lists/inspects containers to read router labels
+      NETWORKS: "1"       # container network settings
+      EVENTS: "1"         # watch container start/stop to update routes
+      PING: "1"
+      VERSION: "1"
+      POST: "0"           # deny all writes (create/exec/restart/…) — everything else defaults to 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   traefik:
     image: traefik:v3.7.7                    # última estável (2026-07-08)
     container_name: manager-traefik
@@ -71,13 +88,15 @@ services:
     depends_on:
       step-ca:
         condition: service_healthy
+      socket-proxy:
+        condition: service_started
     networks: [manager-komodo]
     ports:
       # Público no IP específico (não 0.0.0.0) para coexistir com o interno no mesmo porto 443.
       - "${PUBLIC_IP}:443:443"              # websecure-public (internet)
       - "100.64.0.1:443:8443"               # websecure-internal, só mesh (Tailscale IP do host)
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # No docker.sock here — Traefik reads the Docker API via socket-proxy (tcp, read-only).
       - ./docker/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./docker/traefik/dynamic:/etc/traefik/dynamic:ro
       - ./docker/traefik/certs:/certs       # acme-*.json (Traefik cria a 600) + step-ca-root.crt
@@ -101,7 +120,6 @@ services:
       - "traefik.http.routers.control.tls.certresolver=le"
       - "traefik.http.routers.control.priority=1"   # host-only; /provisioning (prio 100) wins
       - "traefik.http.services.control.loadbalancer.server.port=8080"
-      - "me.tale.headplane.target=headscale"        # lets Headplane discover this container
 
 
   # Headplane — web UI for Headscale (node management). Internal only, reachable over the mesh at
@@ -121,8 +139,6 @@ services:
     volumes:
       - ./docker/headplane/config.yaml:/etc/headplane/config.yaml:ro
       - ./docker/headscale/config.yaml:/etc/headscale/config.yaml:ro   # read-only: display/validate
-      - ./docker/headscale/acl.hujson:/etc/headscale/acl.hujson        # rw: UI edits the ACL policy
-      - /var/run/docker.sock:/var/run/docker.sock:ro                   # discover + reload headscale
       - headplane-data:/var/lib/headplane
     labels:
       - "traefik.enable=true"
