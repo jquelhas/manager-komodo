@@ -1,6 +1,41 @@
 # All web-manageable services of the control plane. `href` is the mesh URL (browser, step-ca cert);
-# `siteMonitor` uses the internal Docker-network endpoint (http, container name) for live up/down —
-# this avoids TLS/step-ca trust issues inside the Homepage container.
+# `siteMonitor` and live `widget`s use internal Docker-network endpoints (http, container names) —
+# this avoids TLS/step-ca trust issues inside the Homepage container. VM queries are URL-encoded.
+- Fleet:
+    - SEGCORE hosts online:
+        icon: mdi-server-network-#4ade80
+        description: backends reporting up
+        widget:
+          type: customapi
+          url: http://manager-victoriametrics:8428/api/v1/query?query=sum(up%7Bjob%3D%22gims-backend%22%7D)%20or%20vector(0)
+          refreshInterval: 30000
+          mappings:
+            - field: data.result.0.value.1
+              label: Online
+              format: number
+    - SEGCORE hosts offline:
+        icon: mdi-server-off-#f87171
+        description: backends not scraping
+        widget:
+          type: customapi
+          url: http://manager-victoriametrics:8428/api/v1/query?query=count(up%7Bjob%3D%22gims-backend%22%7D%3D%3D0)%20or%20vector(0)
+          refreshInterval: 30000
+          mappings:
+            - field: data.result.0.value.1
+              label: Offline
+              format: number
+    - Active alerts:
+        icon: mdi-bell-alert-#fbbf24
+        description: vmalert firing (via VM)
+        widget:
+          type: customapi
+          url: http://manager-victoriametrics:8428/api/v1/query?query=count(ALERTS%7Balertstate%3D%22firing%22%7D)%20or%20vector(0)
+          refreshInterval: 30000
+          mappings:
+            - field: data.result.0.value.1
+              label: Firing
+              format: number
+
 - Control plane:
     - Komodo:
         href: https://komodo.apps.internal
@@ -24,6 +59,9 @@
         description: Metrics TSDB (vmui, targets)
         icon: victoriametrics.png
         siteMonitor: http://manager-victoriametrics:8428
+        widget:
+          type: prometheus
+          url: http://manager-victoriametrics:8428
     - Alertmanager:
         href: https://alertmanager.apps.internal
         description: Alert routing & silences
@@ -33,4 +71,4 @@
         href: https://vmalert.apps.internal
         description: Alerting/recording rules state
         icon: victoriametrics.png
-        siteMonitor: http://manager-vmalert:8880
+        siteMonitor: http://manager-vmalert:8880/health   # /health = clean text/plain 200 (root HTML trips the proxy parser)

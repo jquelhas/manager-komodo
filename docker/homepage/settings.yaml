@@ -5,6 +5,9 @@ color: slate
 headerStyle: clean
 disableUpdateCheck: true          # internal-only; no outbound update pings
 layout:
+  Fleet:
+    style: row
+    columns: 3
   Control plane:
     style: row
     columns: 2

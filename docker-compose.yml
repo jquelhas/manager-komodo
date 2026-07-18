@@ -43,6 +43,7 @@ services:
       - "headplane.apps.internal:100.64.0.1"
       - "tailscale.apps.internal:100.64.0.1"
       - "home.apps.internal:100.64.0.1"
+      - "apps.internal:100.64.0.1"
       - "alertmanager.apps.internal:100.64.0.1"
       - "vmalert.apps.internal:100.64.0.1"
     # Escuta :9000 só na rede Docker — NÃO publicado no host.
@@ -143,12 +144,12 @@ services:
     restart: unless-stopped
     networks: [manager-komodo]
     environment:
-      HOMEPAGE_ALLOWED_HOSTS: "home.apps.internal"
+      HOMEPAGE_ALLOWED_HOSTS: "home.apps.internal,apps.internal"
     volumes:
       - ./docker/homepage:/app/config
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.homepage.rule=Host(`home.apps.internal`)"
+      - "traefik.http.routers.homepage.rule=Host(`home.apps.internal`) || Host(`apps.internal`)"
       - "traefik.http.routers.homepage.entrypoints=websecure-internal"
       - "traefik.http.routers.homepage.tls.certresolver=stepca"
       - "traefik.http.services.homepage.loadbalancer.server.port=3000"
