@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly PGHero stats capture
+
+[Timer]
+OnCalendar=*-*-* *:05:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

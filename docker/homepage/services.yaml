@@ -72,3 +72,8 @@
         description: Alerting/recording rules state
         icon: victoriametrics.png
         siteMonitor: http://manager-vmalert:8880/health   # /health = clean text/plain 200 (root HTML trips the proxy parser)
+    - PGHero:
+        href: https://pghero.apps.internal
+        description: PostgreSQL analysis (slow queries, indexes, bloat)
+        icon: mdi-database-search-#38bdf8
+        # No siteMonitor: PGHero requires HTTP basic-auth on every path, so a probe would 401 (false down).

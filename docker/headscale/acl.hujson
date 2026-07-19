@@ -17,9 +17,11 @@
     // Operador (laptop) — acesso total à mesh (Grafana, Komodo UI, SSH aos hosts, BDs).
     { "action": "accept", "src": ["tag:operator"], "dst": ["*:*"] },
 
-    // Manager (VictoriaMetrics, Komodo Core) — só /metrics + Periphery nos hosts das apps.
-    // One rule per app tag (ports: backend /metrics, postgres-exporter, Komodo periphery).
-    { "action": "accept", "src": ["tag:manager"], "dst": ["tag:segcore:3000,9187,8120"] },
+    // Manager (VictoriaMetrics, Komodo Core, PGHero) — só /metrics + Periphery + Postgres nos hosts
+    // das apps. One rule per app tag (ports: backend /metrics, postgres-exporter, Komodo periphery,
+    // Postgres). A 5432 é para o PGHero (análise read-only, role pg_monitor); o pg_hba.conf do host
+    // restringe essa role ao IP do manager (100.64.0.1). Ver docs/DESIGN.md.
+    { "action": "accept", "src": ["tag:manager"], "dst": ["tag:segcore:3000,9187,8120,5432"] },
 
     // Hosts das apps — sem tráfego entre si nem para o manager (default deny; sem regra).
   ],

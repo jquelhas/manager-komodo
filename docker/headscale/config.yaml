@@ -81,6 +81,9 @@ dns:
     - name: "vmalert.apps.internal"
       type: "A"
       value: "100.64.0.1"
+    - name: "pghero.apps.internal"
+      type: "A"
+      value: "100.64.0.1"
 
 # Política de acessos (ACLs) versionada em ficheiro.
 policy:

@@ -561,6 +561,28 @@ Tudo bindado em `${LOCAL_BIND_IP}`, nunca em `0.0.0.0`:
 | 3000  | Backend `/metrics` + API interna | VictoriaMetrics central → host |
 | 9187  | `postgres-exporter` | VictoriaMetrics central → host |
 | 8120  | Komodo Periphery | Komodo Core → host |
+| 5432  | PostgreSQL (análise PGHero, **read-only**) | PGHero (manager) → host |
+
+### Acesso PGHero à 5432 (análise read-only)
+
+Originalmente o manager era *scrape-only* e a 5432 estava fora do ACL. Para o **PGHero**
+(análise de piores queries, índices em falta/não usados, bloat) o manager precisa de SQL, não só
+de métricas — o `postgres-exporter` não dá isso. Decisão consciente: abrir a 5432 **apenas** para
+`tag:manager` no `acl.hujson`, com estas mitigações a manter o least-privilege:
+
+- Role dedicada `monitor` em cada host, **só `pg_monitor`** (read-only; sem escrita, sem EXPLAIN).
+- `pg_hba.conf` do host restringe a role `monitor` ao IP do manager (`100.64.0.1/32`).
+- UI do PGHero só na mesh (`pghero.apps.internal`, atrás do step-ca) e com basic-auth.
+- O manager guarda **apenas** a password read-only (`PGHERO_DB_PASSWORD`, igual em todos os hosts);
+  as credenciais de escrita/master das apps continuam a **não** estar no manager.
+- O histórico do PGHero é gravado num Postgres próprio do manager (`pghero-postgres`), pelo que as
+  ligações às BDs das apps são sempre read-only.
+- A análise **live** (piores queries, índices, bloat, ligações) e o **histórico de espaço** usam só
+  `pg_monitor`. O **histórico de query-stats** é opcional e exige `GRANT EXECUTE` em
+  `pg_stat_statements_reset` para o `monitor` (o PGHero faz reset por-base a cada hora) — decisão por
+  host, documentada em `docs/pghero-host-setup.md`.
+
+Setup por host (repo GIMSv2): ver `docs/pghero-host-setup.md`.
 
 ## Próximos passos (quando se decidir implementar)
 

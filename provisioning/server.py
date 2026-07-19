@@ -318,9 +318,12 @@ def komodo_list_containers(server_name):
     return resp if isinstance(resp, list) else None
 
 
+# NOTE: no cpu_percent here on purpose. Komodo's docker-stats `cpu_perc` is delta-based and comes
+# back unreliable/stale (observed stuck at ~24% while the host was idle at 0.3%), so we don't collect
+# it. mem/net/block/pids are absolute values and are trustworthy. Accurate per-container CPU would
+# need cAdvisor (container_cpu_usage_seconds_total + rate()).
 _CONTAINER_FAMILIES = [
     ("komodo_container_running", "gauge", "1 if the container state is running"),
-    ("komodo_container_cpu_percent", "gauge", "CPU usage percent (docker stats via Komodo Periphery)"),
     ("komodo_container_mem_percent", "gauge", "Memory usage percent"),
     ("komodo_container_mem_used_bytes", "gauge", "Memory used in bytes"),
     ("komodo_container_mem_limit_bytes", "gauge", "Memory limit in bytes"),
@@ -353,7 +356,6 @@ def container_metrics_text():
                 if val is not None:
                     samples[metric].append((lbl, val))
 
-            add("komodo_container_cpu_percent", _pct(st.get("cpu_perc")))
             add("komodo_container_mem_percent", _pct(st.get("mem_perc")))
             used, limit = _pair(st.get("mem_usage"))
             add("komodo_container_mem_used_bytes", used)

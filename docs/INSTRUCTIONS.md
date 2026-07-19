@@ -61,12 +61,11 @@ sudo bash -c "$(curl -fsSL https://komodo.segcore.eu/provisioning/<uuid>/install
 
 ## 3. Host-side steps for deploys & metrics
 
-**Before the first Komodo deploy** — allow root's git on the app repo (else `git pull` aborts with
-"dubious ownership" mid-deploy and stops the app):
-
-```bash
-sudo git config --system --add safe.directory /opt/SEGCORE
-```
+**Deploys run as `ubuntu`** — onboarding sets Periphery to run as the `ubuntu` user (in the `docker`
+group) via a systemd drop-in, so Komodo's `git pull` + `on_pull` (update.sh) produce `ubuntu`-owned
+files. No `git config safe.directory` hack is needed, and manual `sudo -u ubuntu ./scripts/update.sh`
+runs don't collide. (If a host predates this, migrate it: `usermod -aG docker ubuntu`,
+`chown -R ubuntu:ubuntu /etc/komodo /opt/SEGCORE`, add the `User=ubuntu` drop-in, restart periphery.)
 
 **Metrics** — the app must bind `backend`/`postgres-exporter` on the mesh IP. In the app `.env`,
 `LOCAL_BIND_IP` = the host's mesh IP (`tailscale ip -4`), then
@@ -88,8 +87,9 @@ Expected: node present (`tag:segcore`), Server state `Ok`, `up=1` for backend/po
 ## 5. Deploy
 
 - **One host** — Komodo UI: *Repos → `segcore-<host>` → Pull*. Runs `./scripts/update.sh` on the host
-  (backup → git pull → build → up). Note: no live log streaming — the full log appears in the Update
-  record when it finishes; watch live on the host with `docker compose ps` if needed.
+  (backup → git pull → build → up). **Logs:** the full output is in the Update record when it finishes
+  (toggle **Poll** on the log tab for near-realtime); for a live view, `update.sh` also tees to
+  `/opt/SEGCORE/logs/update-<ts>.log` on the host — `tail -f /opt/SEGCORE/logs/update-*.log`.
 - **All / several** — `BatchPullRepo` by name pattern `segcore-*` or by the `segcore` tag.
   ⚠️ Batch **executes** (it is not a dry-run).
 - **Orchestrated / canary** — a Komodo Procedure (sequential/parallel stages), schedulable / webhook.

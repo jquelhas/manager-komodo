@@ -3,10 +3,12 @@
 #
 # Everything is installed NATIVELY on the host (like Tailscale): no Periphery container.
 #   - Tailscale client  -> systemd (tailscaled), joins the Headscale mesh.
-#   - Komodo Periphery  -> systemd service (root), installed via Komodo's setup-periphery.py.
-# This is additive and does NOT touch the running application. Periphery still uses the host's
-# Docker to manage the app; running it natively (root) keeps it independent of the app's Docker
-# lifecycle and lets Komodo also do OS-level ops (apt/reboot/cleanup) later.
+#   - Komodo Periphery  -> systemd service, installed via Komodo's setup-periphery.py, then set to
+#     run as the deploy user (${DEPLOY_USER}, in the docker group) via a systemd drop-in.
+# This is additive and does NOT touch the running application. Periphery uses the host's Docker to
+# manage the app. Running as the deploy user (not root) means Komodo's git pull + on_pull
+# (update.sh) produce <user>-owned files — no "dubious ownership", no conflict with manual runs.
+# Trade-off: a non-root Periphery can't do root OS-ops (apt/reboot) — use SSH break-glass for those.
 #
 # Idempotent: safe to re-run (updates versions, leaves existing config/keys intact).
 #
@@ -34,6 +36,10 @@ CORE_PUBLIC_KEY="${CORE_PUBLIC_KEY:-${KOMODO_CORE_PUBKEY:-MCowBQYDK2VuAyEAq4h7qO
 PERIPHERY_VERSION="${PERIPHERY_VERSION:-v2.2.0}"
 SETUP_URL="${SETUP_URL:-https://raw.githubusercontent.com/moghtech/komodo/${PERIPHERY_VERSION}/scripts/setup-periphery.py}"
 KOMODO_ROOT="${KOMODO_ROOT:-/etc/komodo}"
+# Periphery (and thus deploys) run as this user, in the docker group — so pull/on_pull files are
+# owned by it, not root. APP_PATH is pre-created owned by it so Komodo's first clone works.
+DEPLOY_USER="${DEPLOY_USER:-${KOMODO_DEPLOY_USER:-ubuntu}}"
+APP_PATH="${APP_PATH:-${KOMODO_APP_PATH:-/opt/SEGCORE}}"
 MANAGER_MESH_IP="${MANAGER_MESH_IP:-100.64.0.1}"
 HEADSCALE_V4_RANGE="100.64.0.0/16"          # our mesh range (must not clash with other overlays)
 
@@ -197,11 +203,28 @@ allowed_ips = ["${HEADSCALE_V4_RANGE}"]
 TOML
 
 # --- Install/refresh the native systemd Periphery via Komodo's setup script ---
-info "Installing native Periphery ${PERIPHERY_VERSION} (systemd, root)..."
+info "Installing native Periphery ${PERIPHERY_VERSION} (systemd)..."
 TMP_SETUP="$(mktemp --suffix=.py)"
 curl -fsSL "$SETUP_URL" -o "$TMP_SETUP"
 python3 "$TMP_SETUP" --version "$PERIPHERY_VERSION" --connect-as "$HOSTNAME_ARG"
 rm -f "$TMP_SETUP"
+
+# --- Run Periphery as the deploy user (not root) so pull/on_pull files are <user>-owned ---
+# Keeps the same /etc/komodo config + Noise keys (no Komodo re-registration). Needs docker access.
+if id "$DEPLOY_USER" >/dev/null 2>&1; then
+  info "Configuring Periphery to run as '${DEPLOY_USER}' (docker group)..."
+  usermod -aG docker "$DEPLOY_USER"
+  chown -R "$DEPLOY_USER":"$DEPLOY_USER" "$KOMODO_ROOT"    # periphery-as-user writes ssl/state/keys here
+  install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_PATH"  # Komodo clones here as the deploy user
+  install -d /etc/systemd/system/periphery.service.d
+  cat > /etc/systemd/system/periphery.service.d/override.conf <<UNIT
+[Service]
+User=${DEPLOY_USER}
+SupplementaryGroups=docker
+UNIT
+else
+  warn "user '${DEPLOY_USER}' not found — Periphery will keep running as root (deploys stay root-owned)."
+fi
 
 systemctl daemon-reload
 systemctl enable periphery >/dev/null 2>&1 || true
@@ -219,6 +242,8 @@ if ss -Htln 2>/dev/null | grep -q ':8120'; then
 else
   warn "port 8120 not detected; check 'journalctl -u periphery -n50'."
 fi
+RUN_AS="$(systemctl show periphery -p User --value 2>/dev/null)"
+info "Periphery running as: ${RUN_AS:-root}"
 
 # --- Tell the control plane we're done: it auto-registers this host in Komodo (Core -> periphery)
 #     and burns the provisioning link. Best-effort; the link also expires via its TTL. ---
