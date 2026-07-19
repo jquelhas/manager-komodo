@@ -216,11 +216,16 @@ if id "$DEPLOY_USER" >/dev/null 2>&1; then
   usermod -aG docker "$DEPLOY_USER"
   chown -R "$DEPLOY_USER":"$DEPLOY_USER" "$KOMODO_ROOT"    # periphery-as-user writes ssl/state/keys here
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_PATH"  # Komodo clones here as the deploy user
+  # The base unit hardcodes Environment="HOME=/root" (installed as root). Override HOME + cwd to the
+  # deploy user's home, else Komodo's terminal (login shell in $HOME) fails with EACCES on /root.
+  DEPLOY_HOME="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)"; DEPLOY_HOME="${DEPLOY_HOME:-/home/$DEPLOY_USER}"
   install -d /etc/systemd/system/periphery.service.d
   cat > /etc/systemd/system/periphery.service.d/override.conf <<UNIT
 [Service]
 User=${DEPLOY_USER}
 SupplementaryGroups=docker
+Environment=HOME=${DEPLOY_HOME}
+WorkingDirectory=${DEPLOY_HOME}
 UNIT
 else
   warn "user '${DEPLOY_USER}' not found — Periphery will keep running as root (deploys stay root-owned)."
