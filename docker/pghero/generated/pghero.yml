@@ -7,6 +7,9 @@ databases:
   "segcore-demo__gims_master":
     url: "postgres://monitor:<%= ENV['PGHERO_DB_PASSWORD'] %>@100.64.0.2:5432/gims_master?connect_timeout=5"
     capture_query_stats: true
+  "segcore-demo__gims_mfdemo":
+    url: "postgres://monitor:<%= ENV['PGHERO_DB_PASSWORD'] %>@100.64.0.2:5432/gims_mfdemo?connect_timeout=5"
+    capture_query_stats: true
   "segcore-demo__gims_operalytics":
     url: "postgres://monitor:<%= ENV['PGHERO_DB_PASSWORD'] %>@100.64.0.2:5432/gims_operalytics?connect_timeout=5"
     capture_query_stats: true
