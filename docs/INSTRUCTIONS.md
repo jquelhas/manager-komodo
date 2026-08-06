@@ -86,13 +86,19 @@ Expected: node present (`tag:segcore`), Server state `Ok`, `up=1` for backend/po
 
 ## 5. Deploy
 
+**Caminho recomendado — Procedure `deploy-segcore`** (silencia os alertas durante o rebuild, ver
+[§Alerting → Silences de manutenção](#silences-de-manutenção-no-deploy)). No Komodo UI: *Procedures
+→ `deploy-segcore` → Run*. Faz `silence-on → BatchPullRepo segcore-* → silence-off`, ou seja corre
+`./scripts/update.sh` em toda a frota `segcore-*` sem gerar e-mails de *backend down/up*. Instalar/
+atualizar uma vez com `scripts/setup-deploy-procedure.sh` (ver §Alerting).
+
+Alternativas manuais (⚠️ **não silenciam** — geram os e-mails de down/up durante o rebuild):
 - **One host** — Komodo UI: *Repos → `segcore-<host>` → Pull*. Runs `./scripts/update.sh` on the host
   (backup → git pull → build → up). **Logs:** the full output is in the Update record when it finishes
   (toggle **Poll** on the log tab for near-realtime); for a live view, `update.sh` also tees to
   `/opt/SEGCORE/logs/update-<ts>.log` on the host — `tail -f /opt/SEGCORE/logs/update-*.log`.
 - **All / several** — `BatchPullRepo` by name pattern `segcore-*` or by the `segcore` tag.
   ⚠️ Batch **executes** (it is not a dry-run).
-- **Orchestrated / canary** — a Komodo Procedure (sequential/parallel stages), schedulable / webhook.
 
 ## Notes & gotchas
 
@@ -142,6 +148,32 @@ feed it, so all alerts arrive by e-mail with dedup/grouping.
   2m and e-mails; start it → resolved e-mail.
 - Infra: disable a Server in Komodo or trip a low CPU threshold temporarily.
 - Check the pipeline: vmalert `/api/v1/alerts`, Alertmanager `/api/v2/alerts`.
+
+### Silences de manutenção no deploy
+
+Um deploy reconstrói os containers, por isso o backend fica `up=0` durante o rebuild e a regra
+vmalert `SegcoreBackendDown` dispararia (e-mail *backend down* + depois *backend up* ao resolver).
+Para não alertar num down **planeado**, o deploy é feito pela Procedure **`deploy-segcore`**, que
+envolve o `BatchPullRepo` com duas Actions que abrem e fecham um **silence** no Alertmanager:
+
+- `segcore-silence-on` — cria um silence (matcher `app="segcore"`) com TTL de 30 min. É
+  **time-boxed**: auto-expira mesmo que o deploy falhe/pendure, portanto nunca fica um silence preso.
+- `segcore-silence-off` — apaga o silence no fim (procura-o pelo marcador `createdBy=komodo` +
+  `comment="segcore deploy"`, sem precisar de passar o id entre stages).
+
+As Actions correm no runtime Deno do Komodo Core, que está na mesma rede Docker que o Alertmanager,
+logo falam com `http://alertmanager:9093/api/v2/silences` diretamente (sem mesh, sem token). O
+código-fonte está em [`docker/komodo/actions/`](../docker/komodo/actions/).
+
+**Instalar / atualizar (idempotente):**
+```bash
+./scripts/setup-deploy-procedure.sh   # usa KOMODO_API_KEY/SECRET do .env; KOMODO_URL default https://komodo.apps.internal
+```
+Cria/atualiza as duas Actions e a Procedure `deploy-segcore`. Re-correr após editar os `.ts`.
+
+⚠️ O silêncio só se aplica quando o deploy passa pela Procedure. Um *Repo Pull* direto (ou
+`update.sh` à mão no host) **não** silencia. Fora de uma janela de deploy, `SegcoreBackendDown`
+continua a alertar normalmente ao fim de 2 min.
 
 ## Offboard (remove a host)
 
