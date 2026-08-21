@@ -199,10 +199,21 @@ services:
       APP_GIT_REPO: "jquelhas/GIMSv2"
       APP_GIT_BRANCH: "main"
       APP_PATH: "/opt/SEGCORE"
-      APP_ON_PULL: "./scripts/update.sh"
+      # Guard first: Komodo writes the .env before on_pull, and an unresolved [[NAME]] is written
+      # through literally instead of failing (fail_on_missing_variable=false upstream). CHANGE_ME is
+      # the same hazard for the per-host values that are filled in in the Komodo UI after onboarding.
+      # Without this the app would boot with "[[...]]" as a password. Keep in sync with the same
+      # guard in scripts/setup-app-env.sh.
+      # The second check: an empty TENANT_CONFIG_KEY makes the app fall back to JWT_SECRET for
+      # at-rest encryption (TENANT_CONFIG_KEY || JWT_SECRET || 'default-key-change-me'), which turns
+      # a rotated JWT_SECRET into unreadable stored credentials. Silent, so fail the deploy instead.
+      APP_ON_PULL: "if grep -qE '\\[\\[|CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nE '\\[\\[|CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
       APP_TAG: "segcore"
+      APP_ENV_TEMPLATE: "/app/app-env.template"
     volumes:
       - ./provisioning/server.py:/app/server.py:ro
+      # Single-file bind mount: editing the template needs `up -d --force-recreate provisioning`.
+      - ./provisioning/app-env.template:/app/app-env.template:ro
       - ./provisioning/store:/store         # rw: burn deletes entries
     labels:
       - "traefik.enable=true"

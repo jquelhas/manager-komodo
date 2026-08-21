@@ -1,0 +1,197 @@
+# SEGCORE app environment — MANAGED BY KOMODO. DO NOT EDIT ON THE HOST.
+#
+# Komodo writes this file to <repo path>/.env (mode 0600) on every Clone/Pull, right before it runs
+# on_pull. Any edit made directly on the host is lost on the next deploy. To change a value, edit
+# the Repo's Environment in the Komodo UI (Repos -> segcore-<host> -> Config -> Environment), or the
+# corresponding Variable / secret. See docs/INSTRUCTIONS.md, "App .env management".
+#
+# NOTE: Komodo does not copy this file verbatim. It parses it into KEY=value pairs and re-serialises
+# them, so **comments and blank lines are stripped** — everything below is documentation for whoever
+# edits the template or the Repo environment, and never reaches the host. That is also why the
+# warning is repeated as a real assignment (KOMODO_MANAGED_FILE): it is the only part of this header
+# an operator looking at /opt/SEGCORE/.env will actually see. It is unused by the app.
+#
+# QUOTING: do not quote values. Quotes are not syntax here — they are written into the file
+# literally, so DEFAULT_ADMIN_PASSWORD="s3cr3t" becomes a password that includes the quote
+# characters. Values survive verbatim, including # & = $ % { } ' " and inner spaces; the only two
+# hazards, verified on 2.2.0, are (a) whitespace followed by # inside a value, which is treated as an
+# inline comment and truncates it, and (b) trailing whitespace, which is trimmed. Both apply to
+# interpolated values too — Core substitutes before the file is parsed — so avoid " #" in generated
+# passwords. Quoting does NOT protect against either: "a #b" is written as "a .
+#
+# Three kinds of placeholder appear below:
+#
+#   {{NAME}}   Rendered by the manager when this template seeds a Repo's Environment
+#              (provisioning/server.py at onboarding, or scripts/setup-app-env.sh). Only MESH_IP
+#              and HOSTNAME are derivable.
+#
+#   [[NAME]]   Interpolated at deploy time. Komodo Core resolves it from a Variable (Settings ->
+#              Variables) or from the [secrets] block of the Core config file; whatever Core does
+#              not know is resolved by that host's Periphery agent from the [secrets] block of
+#              /etc/komodo/periphery.config.toml. Periphery-level secrets never cross the network
+#              and are scoped to that single host — that is how a value is kept per-host.
+#              An unknown name is NOT an error: it is written through literally. The on_pull guard
+#              refuses to deploy when that happens.
+#              CAUTION: a name that exists as a global Variable can NOT be overridden per host —
+#              Core resolves first and the periphery never sees it. For a per-host value, the name
+#              must exist ONLY in the periphery config.
+#
+#   CHANGE_ME  A per-host value nobody can derive. Filled in AFTER seeding, in the Komodo UI
+#              (Repos -> segcore-<host> -> Config -> Environment) — deliberately not in the manager's
+#              .env, so onboarding a host never means editing this repo. The on_pull guard aborts the
+#              deploy while any CHANGE_ME is still there.
+#
+# SECRETS ARE FLEET-WIDE BY DESIGN. Every [[NAME]] below is a Komodo Variable shared by the whole
+# segcore fleet, pushed from APPVAR_*/APPSECRET_* in the manager .env by scripts/setup-app-env.sh.
+# The trade-off is deliberate: one place to manage each value, and the mesh ACL already denies
+# app-host-to-app-host and app-host-to-manager traffic, so a credential taken from one host buys no
+# access to another host's Postgres.
+#
+# A host that needs a different value is the EXCEPTION, and is handled in that Repo's Environment in
+# the Komodo UI: replace [[NAME]] with the literal value, or with a host-specific Variable
+# (JWT_SECRET=[[HOST1_JWT_SECRET]]) to keep it out of read/GetRepo, which returns literals in clear
+# to anyone with read access. Do NOT try to override by putting the same name in the host's periphery
+# [secrets]: Core interpolates first and the periphery never sees it.
+#
+# One value is per host by default: JWT_SECRET. The app backends are PUBLIC, so a shared signing key
+# would let a token minted on one host authenticate as admin on every other tenant, over the
+# internet, with no network barrier in the way. It is generated per host at onboarding — see the KEYS
+# section below. BACKUP_ENCRYPTION_KEY stays fleet-wide by decision: restoring one host's backup on
+# another host is a wanted capability (failover drills, debugging), and that requires one key.
+#
+# And note the one value that is not free to choose: DB_PASSWORD must match what that host's Postgres
+# cluster was initialised with — the password lives inside the cluster, not in this file. Seeding a
+# host with a different one locks the app out of its own database.
+#
+# Fleet-wide Variables this template expects (as APPVAR_*/APPSECRET_* in the manager .env):
+#   POSTGRES_DB_PASSWORD, MONITOR_DB_PASSWORD, DEFAULT_TENANT_CONFIG_KEY, DEFAULT_ADMIN_PASSWORD,
+#   DEFAULT_BACKUP_ENCRYPTION_KEY, WEBHOOK_ALERTAS_TOKEN, SENTRY_DSN_BACKEND, VITE_SENTRY_DSN,
+#   ALERTAS_EMAIL_TO, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY, BACKUP_S3_SECRET_KEY,
+#   BACKUP_S3_ENDPOINT, BACKUP_S3_REGION
+# Plus, per host and created at onboarding: <HOST>_JWT_SECRET.
+
+KOMODO_MANAGED_FILE=do-not-edit-here-edit-the-repo-environment-in-komodo
+
+COMPOSE_PROJECT_NAME=segcore
+
+# ================================================================
+# SERVER
+# ================================================================
+PORT=3000
+NODE_ENV=production
+BUILD_TARGET=production
+TZ=Europe/Lisbon
+
+# ================================================================
+# NETWORK / DOMAINS
+# ================================================================
+# LOCAL_BIND_IP — where internal-only services bind (backend :3000, postgres-exporter :9187).
+# This is the host's mesh IP; the manager scrapes these over the mesh, so it must not be 127.0.0.1.
+LOCAL_BIND_IP={{MESH_IP}}
+# Private domain for admin tooling, reachable over the mesh. Defaults to the mesh IP through nip.io,
+# which resolves without any DNS setup and is valid on every host; override it in the Komodo UI on
+# hosts that have a real internal DNS name (e.g. local.gims.pt).
+LOCAL_BASE_DOMAIN={{MESH_IP}}.nip.io
+# Public bind. Per host and not derivable: the host's own public IP. Bind the specific address rather
+# than 0.0.0.0, the same rule the manager's Traefik follows — otherwise the public listener also
+# answers on the mesh interface. Fill in in the Komodo UI.
+PUBLIC_BIND_IP=CHANGE_ME
+
+# ================================================================
+# DATABASE (master)
+# ================================================================
+DB_HOST=postgres
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=[[POSTGRES_DB_PASSWORD]]
+DB_MASTER_DATABASE=gims_master
+# Read-only role for monitoring (pghero + postgres-exporter). MONITOR_DB_PASSWORD must match the
+# manager's PGHERO_DB_PASSWORD — the manager keeps a single secret for the whole fleet, so this one
+# is fleet-wide on purpose. See docs/pghero-host-setup.md.
+MONITOR_USER=monitor
+MONITOR_DB_PASSWORD=[[MONITOR_DB_PASSWORD]]
+
+# ================================================================
+# MULTITENANT
+# ================================================================
+MULTITENANT_ENABLED=true
+VITE_MULTITENANT=true
+
+# ================================================================
+# DOCKER
+# ================================================================
+DOCKER_USER=1000
+DOCKER_GROUP=1000
+
+# ================================================================
+# KEYS
+# ================================================================
+# JWT_SECRET signs the API tokens only — per host, generated once at onboarding into the Komodo
+# Variable <HOST>_JWT_SECRET (provisioning/server.py) and never regenerated. Per host because the
+# backends are public: a shared signing key would let a token minted on one host authenticate as
+# admin on every other tenant. Rotating it only ends sessions (longest token is the 30d "remember
+# me"); it destroys no data, PROVIDED TENANT_CONFIG_KEY below is set.
+JWT_SECRET=[[{{HOST_UPPER}}_JWT_SECRET]]
+
+# TENANT_CONFIG_KEY encrypts data AT REST — tenant config, integration credentials, SMTP credentials
+# (backend/services/{TenantConfigService,TenantLocalConfigService,SmtpServerService}.js,
+# services/integracoes/crypto.js). Fleet-wide on purpose: it has to travel with the data, so a
+# backup from one host can be restored on another.
+#
+# ⚠️ Two rules. (1) The value must be the key the existing ciphertext was encrypted with — the app
+# falls back to JWT_SECRET when this is unset, so on a host that never had it, that is that host's
+# CURRENT JWT_SECRET. Setting anything else makes the stored credentials unreadable. (2) It must
+# never go back to empty: the fallback would silently return to JWT_SECRET, which by then may have
+# been rotated. The on_pull guard fails the deploy if it is empty.
+TENANT_CONFIG_KEY=[[DEFAULT_TENANT_CONFIG_KEY]]
+
+# ================================================================
+# FILE STORAGE
+# ================================================================
+DEFAULT_STORAGE_PROVIDER=local
+UPLOAD_PATH=/storage/uploads
+MAX_FILE_SIZE=10485760
+
+# ================================================================
+# ADMIN default credentials
+# ================================================================
+# Grafana is no longer part of SEGCORE — GF_ADMIN_USER / GF_ADMIN_PASSWORD are deliberately absent.
+DEFAULT_ADMIN_USER=admin
+DEFAULT_ADMIN_PASSWORD=[[DEFAULT_ADMIN_PASSWORD]]
+
+# ================================================================
+# SENTRY
+# ================================================================
+SENTRY_DSN_BACKEND=[[SENTRY_DSN_BACKEND]]
+VITE_SENTRY_DSN=[[VITE_SENTRY_DSN]]
+
+# ================================================================
+# BACKUPS (per host — each host backs up its own cluster; do not centralise)
+# ================================================================
+BACKUP_PATH=/storage/backups
+BACKUP_ENABLED=true
+BACKUP_CRON_SCHEDULE=0 3 * * *
+BACKUP_MAX_CONCURRENT=1
+# AES-256 key for the manual DR backups (scripts/backup.sh). IRRECOVERABLE if lost — keep a copy
+# out-of-band, exactly like the manager's BACKUP_MASTER_KEY.
+BACKUP_ENCRYPTION_KEY=[[DEFAULT_BACKUP_ENCRYPTION_KEY]]
+
+BACKUP_S3_ENABLED=true
+BACKUP_S3_PROVIDER=hetzner
+BACKUP_S3_BUCKET=[[BACKUP_S3_BUCKET]]
+BACKUP_S3_ACCESS_KEY=[[BACKUP_S3_ACCESS_KEY]]
+BACKUP_S3_SECRET_KEY=[[BACKUP_S3_SECRET_KEY]]
+BACKUP_S3_ENDPOINT=[[BACKUP_S3_ENDPOINT]]
+BACKUP_S3_REGION=[[BACKUP_S3_REGION]]
+BACKUP_S3_RETENTION_DAYS=30
+
+# ================================================================
+# OTHER
+# ================================================================
+SWAGGER_ENABLED=false
+
+# ================================================================
+# SYSTEM ALERTS (app -> its own backend webhook)
+# ================================================================
+ALERTAS_EMAIL_TO=[[ALERTAS_EMAIL_TO]]
+WEBHOOK_ALERTAS_TOKEN=[[WEBHOOK_ALERTAS_TOKEN]]

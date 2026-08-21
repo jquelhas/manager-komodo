@@ -67,9 +67,106 @@ files. No `git config safe.directory` hack is needed, and manual `sudo -u ubuntu
 runs don't collide. (If a host predates this, migrate it: `usermod -aG docker ubuntu`,
 `chown -R ubuntu:ubuntu /etc/komodo /opt/SEGCORE`, add the `User=ubuntu` drop-in, restart periphery.)
 
-**Metrics** — the app must bind `backend`/`postgres-exporter` on the mesh IP. In the app `.env`,
-`LOCAL_BIND_IP` = the host's mesh IP (`tailscale ip -4`), then
-`docker compose up -d backend postgres-exporter`. (Prod hosts already on the mesh usually have this.)
+**Per-host secrets** — uncomment the `[secrets]` block in `/etc/komodo/periphery.config.toml` and
+fill in `APP_DB_PASSWORD`, `APP_JWT_SECRET`, `APP_ADMIN_PASSWORD`, `APP_BACKUP_ENCRYPTION_KEY`,
+`APP_WEBHOOK_ALERTAS_TOKEN` (`openssl rand -hex 32`), then `systemctl restart periphery`. Until they
+are set the deploy aborts on purpose — see §App `.env` management. Keep `APP_BACKUP_ENCRYPTION_KEY`
+out-of-band: without it that host's DR backups are unrecoverable.
+
+**Metrics** — `backend`/`postgres-exporter` must bind the mesh IP. `LOCAL_BIND_IP` is filled in
+automatically from the host's mesh IP when the Repo environment is seeded, so no manual edit is
+needed; after the first deploy check `up{host="<host>"}` in §4.
+
+## App `.env` management
+
+The app `.env` on each host is **written by Komodo**, not maintained by hand. Each Repo's
+`environment` holds the file's contents; Komodo writes it to `/opt/SEGCORE/.env` (mode `0600`) on
+every Clone/Pull, immediately before running `on_pull`. **Editing `/opt/SEGCORE/.env` on the host is
+pointless — the next deploy overwrites it.** Change values here instead:
+
+**Secrets are fleet-wide by design** (decided 2026-08-20): one Variable per value, shared by the whole
+`segcore` fleet, so there is a single place to manage each one. The mesh ACL denies app-host↔app-host
+and app-host→manager traffic, so a credential taken from one host buys no access to another host's
+Postgres. A host that needs its own value is the exception, handled in its Repo `environment`.
+
+| kind of value | where it lives | how it is referenced |
+|---|---|---|
+| fleet-wide (the default, secret or not) | Komodo Variable (*Settings → Variables*), from `APPVAR_*`/`APPSECRET_*` | `[[NAME]]` |
+| per host, not sensitive (`LOCAL_BASE_DOMAIN`, `PUBLIC_BIND_IP`) | literal in that Repo's `environment`, edited in the Komodo UI | written directly |
+| per host, exception to a fleet-wide secret | literal in that Repo's `environment`, or a host-specific Variable | `[[HOST1_JWT_SECRET]]` |
+
+### The two keys
+
+`JWT_SECRET` is **per host**, generated once at onboarding into the Variable `<HOST>_JWT_SECRET` by
+`provisioning/server.py`, and never regenerated — the app `.env` is rewritten on every deploy, so a
+value generated at boot-time-if-missing would change on every deploy and log everyone out. Per host
+because the app backends are public: a shared signing key would let a token minted on one host
+authenticate as admin on every other tenant. Rotating it only ends sessions (the longest token is the
+30-day "remember me"); it destroys no data, **provided `TENANT_CONFIG_KEY` is set**.
+
+`TENANT_CONFIG_KEY` encrypts data at rest — tenant config, integration credentials, SMTP credentials.
+It is fleet-wide on purpose, because it has to travel with the data for a backup from one host to be
+restorable on another. The app resolves
+`TENANT_CONFIG_KEY || JWT_SECRET || 'default-key-change-me'`, so two rules follow: its value must be
+the key the existing ciphertext was encrypted with (on a host that never had it set, that is that
+host's **current** `JWT_SECRET`), and it must never go back to empty, or at-rest encryption silently
+falls back to a `JWT_SECRET` that may since have been rotated. The `on_pull` guard fails the deploy
+on an empty value.
+
+`BACKUP_ENCRYPTION_KEY` is fleet-wide by decision: restoring one host's backup on another (failover
+drills, debugging) is a wanted capability and needs one key. `DB_PASSWORD` is not free to choose at
+all — it must match what that host's Postgres cluster was initialised with.
+
+Note that `read/GetRepo` returns a literal in clear to anyone with read access on the Repo, which is
+why a host-specific Variable is preferable to a literal for an exception that is sensitive. And an
+override can **not** be done by putting the same name in the host's periphery `[secrets]`: Core
+interpolates first, so the periphery never sees it. Komodo Variables are also **not encrypted at
+rest** — the Core config file's `[secrets]` block is the hardening option for shared secrets.
+
+**Careful:** an unknown `[[NAME]]` is *not* an error — Komodo writes it through literally. The
+`on_pull` guard therefore aborts the deploy if any `[[` survives in the written `.env`.
+
+**Komodo does not copy the environment verbatim**: it parses it into `KEY=value` pairs and
+re-serialises them, so comments and blank lines are stripped from the file the host receives. Values
+survive verbatim — `#`, `=`, `&`, `$`, `%`, `{}`, quotes and inner spaces were all verified on 2.2.0.
+Two exceptions: **trailing whitespace is trimmed**, and **whitespace followed by `#` is treated as an
+inline comment** and truncates the value. Both apply to interpolated values too, because Core
+substitutes before the file is parsed — so avoid `" #"` in generated passwords.
+
+**Do not quote values.** Quotes are not syntax here, they are written into the file literally, so
+`DEFAULT_ADMIN_PASSWORD="s3cr3t"` yields a password containing the quote characters. They also do not
+protect anything: `"a #b"` is written as `"a`. Comments in the template/environment are therefore for
+whoever edits it in Komodo. When diffing a rendered environment against a host's existing `.env`,
+compare assignments only — e.g.
+```bash
+KEYS='^[A-Za-z_][A-Za-z0-9_]*='   # note the digits: BACKUP_S3_* would be missed by [A-Z_]+
+diff <(scripts/setup-app-env.sh --print segcore-demo | grep -E "$KEYS" | sort) \
+     <(grep -E "$KEYS" captured.env | sort)
+```
+
+```bash
+# lint + show what would change, for every segcore-* Repo (no writes)
+scripts/setup-app-env.sh
+# push the fleet-wide Variables from APPVAR_*/APPSECRET_* in .env, seed empty environments
+scripts/setup-app-env.sh --apply
+# render one host's .env to stdout (to diff against what is on the host today)
+scripts/setup-app-env.sh --print segcore-demo
+```
+
+`LOCAL_BIND_IP` is derived from the Server's mesh address, so it is never set by hand. **Everything
+else that differs per host is set in the Komodo UI, not in this repo** — that way onboarding a host
+never means editing the manager's `.env`. The template ships those values as `CHANGE_ME`; after the
+Repo is seeded, open *Repos → `segcore-<host>` → Config → Environment* and fill them in. A legacy
+host that needs its own `COMPOSE_PROJECT_NAME` or `NODE_ENV` gets it the same way: edit the line in
+its `environment`, or add one.
+
+Forgetting to fill one in is caught, not silently deployed: the `on_pull` guard aborts on `[[` **and**
+on `CHANGE_ME`.
+
+The template is `provisioning/app-env.template`; new hosts are seeded from it automatically at
+onboarding (`provisioning/server.py`). The script only seeds an **empty** `environment` — once
+populated, the Komodo UI is the source of truth and `--force` is required to re-seed from the
+template (which would discard the per-host values entered in the UI).
 
 ## 4. Verify (from the manager)
 

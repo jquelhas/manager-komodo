@@ -781,6 +781,15 @@ antes de avançar para a seguinte. Não criar tudo de uma vez.
 - **Não usar GitOps do Komodo** (sync de stacks a partir de git). Komodo aqui é apenas
   orquestrador de comandos. Razão: `update.sh` faz muito mais do que `docker compose up`
   (backup, migrations, manutenção) — GitOps seria refactor enorme com risco.
+- **O `.env` da app é gerido pelo Komodo** (2026-08-20). O campo `environment` de cada Repo contém o
+  ficheiro; o Komodo escreve-o em `/opt/SEGCORE/.env` (modo 0600) antes de cada `on_pull`. Isto **não
+  contradiz o ponto anterior**: continua a ser o `update.sh` a executar o deploy — só o `.env` deixa
+  de ser mantido à mão em cada host. Os valores partilhados são interpolados pelo Core (Variables ou
+  bloco `[secrets]` do config file) e os secrets próprios de cada host pelo periphery desse host
+  (`[secrets]` do `periphery.config.toml`), pelo que nunca atravessam a rede. Ver
+  `docs/INSTRUCTIONS.md` §App `.env` management, `provisioning/app-env.template` e
+  `scripts/setup-app-env.sh`. Nota: um `[[NOME]]` desconhecido não é erro — é escrito literalmente —
+  daí o guard no `on_pull`.
 - **Este documento pode ser copiado para `manager-komodo/docs/OPS.md` (ou dividido em vários
   ficheiros) quando o repo for criado.** Aqui permanece apenas a referência às alterações
   ao GIMSv2.

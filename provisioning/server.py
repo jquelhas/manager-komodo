@@ -18,6 +18,7 @@ import http.server
 import json
 import os
 import re
+import secrets
 import shutil
 import socketserver
 import threading
@@ -59,7 +60,36 @@ APP_GIT_BRANCH = os.environ.get("APP_GIT_BRANCH", "main")
 APP_PATH = os.environ.get("APP_PATH", "/apps/GIMSv2")
 APP_ON_PULL = os.environ.get("APP_ON_PULL", "./scripts/update.sh")
 APP_TAG = os.environ.get("APP_TAG", "segcore")
+# Seeds the Repo's `environment`, which Komodo writes to <APP_PATH>/.env (0600) before each on_pull.
+# Absent file -> environment stays empty -> Komodo writes no file at all (the pre-existing
+# behaviour), so a missing template degrades to "operator manages the .env by hand".
+APP_ENV_TEMPLATE = os.environ.get("APP_ENV_TEMPLATE", "/app/app-env.template")
 _TAG_ID = {}
+
+
+def host_upper(hostname):
+    """Host name as it appears in per-host Variable names: DEMO, PROD_2."""
+    return re.sub(r"[^A-Z0-9_]", "_", hostname.upper())
+
+
+def render_app_env(hostname, mesh_ip):
+    """Render the app .env template for one host. Returns "" if there is no template.
+
+    Only substitutes {{MESH_IP}} / {{HOSTNAME}} / {{HOST_UPPER}}: the [[NAME]] placeholders must
+    survive untouched, since Core (Variables / config secrets) and that host's periphery ([secrets])
+    resolve them at deploy time. Any remaining CHANGE_ME is intentional — the on_pull guard refuses
+    to deploy while the .env still has unresolved placeholders.
+    """
+    try:
+        with open(APP_ENV_TEMPLATE, "r", encoding="utf-8") as f:
+            template = f.read()
+    except OSError:
+        return ""
+    return (
+        template.replace("{{MESH_IP}}", mesh_ip)
+        .replace("{{HOSTNAME}}", hostname)
+        .replace("{{HOST_UPPER}}", host_upper(hostname))
+    )
 
 
 def komodo_api(path, body):
@@ -129,7 +159,35 @@ def komodo_ensure_tag(name):
     return tid
 
 
-def komodo_register_repo(server_id, name):
+def komodo_ensure_jwt_secret(hostname):
+    """Create this host's own JWT signing secret as a Komodo Variable, once. Returns (ok, detail).
+
+    Per host rather than fleet-wide because the app backends are public: one shared signing key would
+    let a token minted on any host authenticate as admin on every other tenant. Safe to keep per host
+    now that TENANT_CONFIG_KEY carries the at-rest field encryption — rotating JWT_SECRET only ends
+    sessions, it does not make stored ciphertext unreadable (see docs/INSTRUCTIONS.md).
+
+    Generated here, at onboarding, and never regenerated: the app .env is rewritten on every deploy,
+    so a value generated at boot-time-if-missing would change on every deploy and log everyone out.
+    """
+    var = f"{host_upper(hostname)}_JWT_SECRET"
+    st, resp = komodo_api(
+        "write/CreateVariable",
+        {
+            "name": var,
+            "value": secrets.token_hex(32),
+            "description": f"JWT signing secret for {hostname} (generated at onboarding)",
+            "is_secret": True,
+        },
+    )
+    if isinstance(resp, dict) and resp.get("name") == var:
+        return True, "created"
+    if _exists_err(resp):
+        return True, "already exists (kept)"   # never overwrite: that would log the host out
+    return False, f"http {st}: {str(resp)[:200]}"
+
+
+def komodo_register_repo(server_id, name, mesh_ip=""):
     """Create the per-host Repo (idempotent) + tag it. Returns (ok, detail).
     Repo is named "<APP_TAG>-<host>" so both name-pattern (e.g. segcore-*) and tag batches work."""
     repo_name = name if name.startswith(f"{APP_TAG}-") else f"{APP_TAG}-{name}"
@@ -143,6 +201,10 @@ def komodo_register_repo(server_id, name):
         "path": APP_PATH,
         "on_pull": {"path": "", "command": APP_ON_PULL, "shell_mode": True},
         "webhook_enabled": False,
+        # Komodo writes this to <path>/.env (0600) before running on_pull. Empty -> no file written.
+        "environment": render_app_env(name, mesh_ip),
+        "env_file_path": ".env",
+        "skip_secret_interp": False,
     }
     st, resp = komodo_api("write/CreateRepo", {"name": repo_name, "config": cfg})
     ok = bool(_oid(resp)) or _exists_err(resp)
@@ -532,8 +594,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             msg = "registered server"
             if role == APP_DEPLOY_ROLE:  # also create the per-host deploy Repo (+ tag)
-                ok, rdetail = komodo_register_repo(server_id, name)
+                # Before the Repo: its seeded environment references [[<HOST>_JWT_SECRET]], so the
+                # Variable has to exist or the first deploy writes the placeholder through and the
+                # on_pull guard aborts it.
+                jok, jdetail = komodo_ensure_jwt_secret(name)
+                if not jok:
+                    self.log_error("CreateVariable <host>_JWT_SECRET failed: %s", jdetail)
+                ok, rdetail = komodo_register_repo(server_id, name, mesh_ip)
                 msg += " + repo" if ok else f" (repo skipped: {rdetail})"
+                if ok and not jok:
+                    msg += " (jwt secret NOT created — set it before deploying)"
                 if not ok:
                     self.log_error("CreateRepo failed: %s", rdetail)
             burn(uuid)  # server registered — remove the link

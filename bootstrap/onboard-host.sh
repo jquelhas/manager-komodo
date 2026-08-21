@@ -200,7 +200,26 @@ cat > "${KOMODO_ROOT}/periphery.config.toml" <<TOML
 root_directory = "${KOMODO_ROOT}"
 core_public_keys = ["${CORE_PUBLIC_KEY}"]
 allowed_ips = ["${HEADSCALE_V4_RANGE}"]
+
+# Per-host secrets. Komodo Variables are global, so anything that must differ per host AND stay
+# secret lives here instead: Core interpolates what it knows into the Repo environment and leaves
+# the rest as [[NAME]], which this agent resolves locally when it writes the app .env. These values
+# never cross the network and are not readable through the Komodo API.
+#
+# Uncomment and fill in on the host before the first deploy, then restart the agent
+# (systemctl restart periphery). Deliberately left commented rather than set to "": an empty value
+# is a successful interpolation, which would slip an empty password past the on_pull guard, whereas
+# an absent key leaves [[NAME]] in the .env and the guard aborts the deploy.
+# Generate with: openssl rand -hex 32   (or -base64 24 for passwords)
+#
+# [secrets]
+# APP_DB_PASSWORD = ""
+# APP_JWT_SECRET = ""
+# APP_ADMIN_PASSWORD = ""
+# APP_BACKUP_ENCRYPTION_KEY = ""
+# APP_WEBHOOK_ALERTAS_TOKEN = ""
 TOML
+chmod 600 "${KOMODO_ROOT}/periphery.config.toml"
 
 # --- Install/refresh the native systemd Periphery via Komodo's setup script ---
 info "Installing native Periphery ${PERIPHERY_VERSION} (systemd)..."
