@@ -67,15 +67,16 @@ files. No `git config safe.directory` hack is needed, and manual `sudo -u ubuntu
 runs don't collide. (If a host predates this, migrate it: `usermod -aG docker ubuntu`,
 `chown -R ubuntu:ubuntu /etc/komodo /opt/SEGCORE`, add the `User=ubuntu` drop-in, restart periphery.)
 
-**Per-host secrets** — uncomment the `[secrets]` block in `/etc/komodo/periphery.config.toml` and
-fill in `APP_DB_PASSWORD`, `APP_JWT_SECRET`, `APP_ADMIN_PASSWORD`, `APP_BACKUP_ENCRYPTION_KEY`,
-`APP_WEBHOOK_ALERTAS_TOKEN` (`openssl rand -hex 32`), then `systemctl restart periphery`. Until they
-are set the deploy aborts on purpose — see §App `.env` management. Keep `APP_BACKUP_ENCRYPTION_KEY`
-out-of-band: without it that host's DR backups are unrecoverable.
+**Secrets** — nothing to do on the host. They are fleet-wide Komodo Variables, and the host's own
+`JWT_SECRET` is generated into `<HOST>_JWT_SECRET` at registration. The only value left to fill in is
+`PUBLIC_BIND_IP` (the host's public IP), in the Komodo UI on that Repo's `environment` — the deploy
+aborts while it is still `CHANGE_ME`. See §App `.env` management. The `[secrets]` block in
+`/etc/komodo/periphery.config.toml` stays commented out; it exists for a value that must never leave
+the host, which is not how this fleet is set up today.
 
 **Metrics** — `backend`/`postgres-exporter` must bind the mesh IP. `LOCAL_BIND_IP` is filled in
 automatically from the host's mesh IP when the Repo environment is seeded, so no manual edit is
-needed; after the first deploy check `up{host="<host>"}` in §4.
+needed; after the first deploy check `up{host="segcore-<host>"}` in §4.
 
 ## App `.env` management
 
@@ -133,9 +134,14 @@ Two exceptions: **trailing whitespace is trimmed**, and **whitespace followed by
 inline comment** and truncates the value. Both apply to interpolated values too, because Core
 substitutes before the file is parsed — so avoid `" #"` in generated passwords.
 
-**Do not quote values.** Quotes are not syntax here, they are written into the file literally, so
-`DEFAULT_ADMIN_PASSWORD="s3cr3t"` yields a password containing the quote characters. They also do not
-protect anything: `"a #b"` is written as `"a`. Comments in the template/environment are therefore for
+**Quoting has three consumers with three different rules**, so keep shell metacharacters out of
+values altogether — generate secrets with `openssl rand -hex 32`, never a passphrase with `&` or
+spaces. Komodo writes the value verbatim (quotes are not syntax to it and end up in the file);
+`./scripts/update.sh` on the host **sources** the file as shell, so an unquoted `& | ; < > ( ) `` `
+or space aborts the deploy — `DEFAULT_ADMIN_PASSWORD=M&Wnode&2000` gave `Wnode: command not found`
+on 2026-08-21 — and such a value must be quoted; docker compose strips surrounding quotes on
+`${VAR}` interpolation but `env_file:` does not, so a quoted value reaches some containers with the
+quotes attached. `scripts/setup-app-env.sh` lints for this on the resolved values before a deploy. Comments in the template/environment are therefore for
 whoever edits it in Komodo. When diffing a rendered environment against a host's existing `.env`,
 compare assignments only — e.g.
 ```bash

@@ -207,7 +207,7 @@ services:
       # The second check: an empty TENANT_CONFIG_KEY makes the app fall back to JWT_SECRET for
       # at-rest encryption (TENANT_CONFIG_KEY || JWT_SECRET || 'default-key-change-me'), which turns
       # a rotated JWT_SECRET into unreadable stored credentials. Silent, so fail the deploy instead.
-      APP_ON_PULL: "if grep -qE '\\[\\[|CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nE '\\[\\[|CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
+      APP_ON_PULL: "if grep -qF -e '[[' -e 'CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nF -e '[[' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
       APP_TAG: "segcore"
       APP_ENV_TEMPLATE: "/app/app-env.template"
     volumes:

@@ -76,6 +76,13 @@ env_get() {
   sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env | head -n1 \
     | sed -e 's/\r$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
+# Same, but WITHOUT unquoting: for APPVAR_*/APPSECRET_* the surrounding quotes are part of the value.
+# `update.sh` on the host sources the .env as shell, so a value like "M&Wnode&2000" needs to keep its
+# quotes all the way through — stripping them here silently reintroduces the bug they exist to avoid.
+env_get_raw() {
+  [ -f .env ] || return 0
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" .env | head -n1 | sed -e 's/\r$//'
+}
 KOMODO_API_KEY="${KOMODO_API_KEY:-$(env_get KOMODO_API_KEY)}"
 KOMODO_API_SECRET="${KOMODO_API_SECRET:-$(env_get KOMODO_API_SECRET)}"
 KOMODO_URL="${KOMODO_URL:-$(env_get KOMODO_URL)}"; KOMODO_URL="${KOMODO_URL:-https://komodo.apps.internal}"
@@ -110,12 +117,15 @@ appvar_names() { sed -n 's/^[[:space:]]*APPVAR_\([A-Za-z_][A-Za-z0-9_]*\)[[:spac
 appsecret_names() { sed -n 's/^[[:space:]]*APPSECRET_\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p' .env 2>/dev/null; }
 
 EXISTING_VARS="$(kapi read/ListVariables '{}' | jq -r '.[].name')"
+# name -> value, for the shell-safety lint below. Needs admin (secret values are only served to
+# admins); values stay inside this variable and are never echoed.
+VAR_VALUES="$(kapi read/ListVariables '{}' | jq -c 'map({(.name): .value}) | add // {}')"
 # Keys of the Core config [secrets] block: queryable by name, values never served by the API.
 CORE_SECRETS="$(kapi read/ListSecrets '{}' | jq -r '.[]? // empty')"
 
 ensure_variable() {
   local name="$1" secret="$2" value
-  value="$(env_get "$3")"
+  value="$(env_get_raw "$3")"
   [ -n "$value" ] || { warn "Variable $name skipped: $3 is empty in .env"; return 0; }
   if grep -qxF "$name" <<<"$EXISTING_VARS"; then
     if [ "$APPLY" = 1 ]; then
@@ -169,7 +179,7 @@ PERIPHERY_SECRETS="${PERIPHERY_SECRETS:-}"
 # placeholder, instead of booting the app with "[[APP_DB_PASSWORD]]" as its password or CHANGE_ME as
 # a domain. Covers both kinds: [[NAME]] (nothing resolved it) and CHANGE_ME (per-host value not yet
 # filled in in the Komodo UI). Keep in sync with APP_ON_PULL in docker-compose.yml.
-ON_PULL_GUARD="if grep -qE '\[\[|CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nE '\[\[|CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
+ON_PULL_GUARD="if grep -qF -e '[[' -e 'CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nF -e '[[' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
 
 lint() {
   local rendered="$1" host="$2" rc=0 name assignments
@@ -189,6 +199,32 @@ lint() {
   # CHANGE_ME is expected on a fresh seed: per-host values are filled in afterwards in the Komodo UI,
   # not here. So it is a warning, not a failure — the on_pull guard is what stops a deploy while one
   # is still there.
+  # `update.sh` on the host SOURCES the .env as a shell script, so a value with an unquoted shell
+  # metacharacter breaks the deploy — `DEFAULT_ADMIN_PASSWORD=M&Wnode&2000` became "Wnode: command
+  # not found" on 2026-08-21. Docker Compose strips surrounding quotes on interpolation, so quoting
+  # keeps both consumers happy. Resolve the [[NAME]]s first: the hazard is usually in a secret's
+  # value, not in the template text.
+  local key val ref repl
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%=*}"; val="${line#*=}"
+    # Same two rules Komodo applies when it parses the environment, so the check sees what the host
+    # will actually get: a whitespace-preceded # is an inline comment, and trailing space is trimmed.
+    val="$(sed -e 's/[[:space:]]\+#.*$//' -e 's/[[:space:]]*$//' <<<"$val")"
+    # Iterate the finite list of names in this line — a re-matching while-loop can fail to converge.
+    for ref in $(grep -oE '\[\[[A-Za-z_][A-Za-z0-9_]*\]\]' <<<"$val" | tr -d '[]' | sort -u); do
+      repl="$(jq -r --arg n "$ref" '.[$n] // ""' <<<"$VAR_VALUES")"
+      # The replacement MUST be quoted: since bash 5.2 an unquoted & in it expands to the matched
+      # text, so a password like M&Wnode&2000 would silently corrupt itself here.
+      val="${val//"[[$ref]]"/"$repl"}"
+    done
+    case "$val" in '"'*'"') continue ;; esac          # already quoted -> safe to source
+    case "$val" in *[\&\|\;\<\>\(\)\`\ ]*)
+      echo "${c_red}    $key has an unquoted shell metacharacter${c_rst} — update.sh sources the .env; wrap the value in double quotes"
+      rc=1 ;;
+    esac
+  done <<<"$assignments"
+
   if grep -q 'CHANGE_ME' <<<"$assignments"; then
     echo "${c_yel}    CHANGE_ME to fill in the Komodo UI${c_rst} (Repos -> $repo_name -> Environment):"
     grep -n 'CHANGE_ME' <<<"$assignments" | sed 's/^/      /'
@@ -229,6 +265,9 @@ while read -r repo_name; do
 
   echo
   echo "== $repo_name (host $host, mesh $mesh_ip)"
+  # Lint what will ACTUALLY be written: once an environment is populated it is hand-edited in the UI,
+  # so linting only the template would miss exactly the problems the UI can introduce.
+  LINT_TARGET="template"; [ -n "$current" ] && LINT_TARGET="environment in Komodo"
 
   # Install just the on_pull guard, leaving `environment` alone. For environments written by hand in
   # the UI: --force would overwrite them, and they still need the guard.
@@ -242,7 +281,8 @@ while read -r repo_name; do
     fi
     continue
   fi
-  lint "$rendered" "$host" || rc=1
+  echo "    linting the $LINT_TARGET"
+  if [ -n "$current" ]; then lint "$current" "$host" || rc=1; else lint "$rendered" "$host" || rc=1; fi
 
   if [ -n "$current" ] && [ "$FORCE" != 1 ]; then
     if [ "$current" = "$rendered" ]; then

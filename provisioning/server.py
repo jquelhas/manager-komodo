@@ -159,32 +159,50 @@ def komodo_ensure_tag(name):
     return tid
 
 
-def komodo_ensure_jwt_secret(hostname):
-    """Create this host's own JWT signing secret as a Komodo Variable, once. Returns (ok, detail).
+# Secrets that belong to one host, generated here at onboarding as Komodo Variables named
+# <HOST>_<SUFFIX> and referenced from the app .env template as [[{{HOST_UPPER}}_<SUFFIX>]].
+#
+# Generated at onboarding and NEVER regenerated. The app .env is rewritten on every deploy, so a
+# value generated at boot-time-if-missing would change on every deploy — logging everyone out
+# (JWT_SECRET) or, worse, disagreeing with the password the Postgres cluster was initialised with
+# (DB_PASSWORD), which locks the app out of its own database.
+#
+# Per host rather than fleet-wide for different reasons each:
+#   JWT_SECRET   the app backends are PUBLIC, so one shared signing key would let a token minted on
+#                any host authenticate as admin on every other tenant. Safe to differ per host now
+#                that TENANT_CONFIG_KEY carries the at-rest encryption: rotating the signing key ends
+#                sessions but does not make stored ciphertext unreadable.
+#   DB_PASSWORD  the password lives inside the Postgres cluster, not in this file. A fleet-wide value
+#                can only ever be right by luck; per host, the mismatch is impossible by construction.
+HOST_SECRETS = (
+    ("JWT_SECRET", "JWT signing secret"),
+    ("DB_PASSWORD", "Postgres password"),
+)
 
-    Per host rather than fleet-wide because the app backends are public: one shared signing key would
-    let a token minted on any host authenticate as admin on every other tenant. Safe to keep per host
-    now that TENANT_CONFIG_KEY carries the at-rest field encryption — rotating JWT_SECRET only ends
-    sessions, it does not make stored ciphertext unreadable (see docs/INSTRUCTIONS.md).
 
-    Generated here, at onboarding, and never regenerated: the app .env is rewritten on every deploy,
-    so a value generated at boot-time-if-missing would change on every deploy and log everyone out.
-    """
-    var = f"{host_upper(hostname)}_JWT_SECRET"
-    st, resp = komodo_api(
-        "write/CreateVariable",
-        {
-            "name": var,
-            "value": secrets.token_hex(32),
-            "description": f"JWT signing secret for {hostname} (generated at onboarding)",
-            "is_secret": True,
-        },
-    )
-    if isinstance(resp, dict) and resp.get("name") == var:
-        return True, "created"
-    if _exists_err(resp):
-        return True, "already exists (kept)"   # never overwrite: that would log the host out
-    return False, f"http {st}: {str(resp)[:200]}"
+def komodo_ensure_host_secrets(hostname):
+    """Create this host's own secrets as Komodo Variables, once each. Returns (ok, detail)."""
+    made, kept, failed = [], [], []
+    for suffix, label in HOST_SECRETS:
+        var = f"{host_upper(hostname)}_{suffix}"
+        st, resp = komodo_api(
+            "write/CreateVariable",
+            {
+                "name": var,
+                "value": secrets.token_hex(32),
+                "description": f"{label} for {hostname} (generated at onboarding)",
+                "is_secret": True,
+            },
+        )
+        if isinstance(resp, dict) and resp.get("name") == var:
+            made.append(var)
+        elif _exists_err(resp):
+            kept.append(var)      # never overwrite an existing one: the host is already using it
+        else:
+            failed.append(f"{var}: http {st} {str(resp)[:120]}")
+    if failed:
+        return False, "; ".join(failed)
+    return True, f"created {len(made)}, kept {len(kept)}"
 
 
 def komodo_register_repo(server_id, name, mesh_ip=""):
@@ -594,16 +612,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             msg = "registered server"
             if role == APP_DEPLOY_ROLE:  # also create the per-host deploy Repo (+ tag)
-                # Before the Repo: its seeded environment references [[<HOST>_JWT_SECRET]], so the
-                # Variable has to exist or the first deploy writes the placeholder through and the
-                # on_pull guard aborts it.
-                jok, jdetail = komodo_ensure_jwt_secret(name)
+                # Before the Repo: its seeded environment references [[<HOST>_JWT_SECRET]] and
+                # [[<HOST>_DB_PASSWORD]], so the Variables have to exist or the first deploy writes
+                # the placeholders through and the on_pull guard aborts it.
+                jok, jdetail = komodo_ensure_host_secrets(name)
                 if not jok:
-                    self.log_error("CreateVariable <host>_JWT_SECRET failed: %s", jdetail)
+                    self.log_error("per-host secret Variables failed: %s", jdetail)
                 ok, rdetail = komodo_register_repo(server_id, name, mesh_ip)
                 msg += " + repo" if ok else f" (repo skipped: {rdetail})"
                 if ok and not jok:
-                    msg += " (jwt secret NOT created — set it before deploying)"
+                    msg += " (host secrets NOT created — set them before deploying)"
                 if not ok:
                     self.log_error("CreateRepo failed: %s", rdetail)
             burn(uuid)  # server registered — remove the link

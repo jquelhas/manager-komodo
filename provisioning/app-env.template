@@ -11,13 +11,21 @@
 # warning is repeated as a real assignment (KOMODO_MANAGED_FILE): it is the only part of this header
 # an operator looking at /opt/SEGCORE/.env will actually see. It is unused by the app.
 #
-# QUOTING: do not quote values. Quotes are not syntax here — they are written into the file
-# literally, so DEFAULT_ADMIN_PASSWORD="s3cr3t" becomes a password that includes the quote
-# characters. Values survive verbatim, including # & = $ % { } ' " and inner spaces; the only two
-# hazards, verified on 2.2.0, are (a) whitespace followed by # inside a value, which is treated as an
-# inline comment and truncates it, and (b) trailing whitespace, which is trimmed. Both apply to
-# interpolated values too — Core substitutes before the file is parsed — so avoid " #" in generated
-# passwords. Quoting does NOT protect against either: "a #b" is written as "a .
+# QUOTING — three consumers, three different rules, so the safe move is to keep metacharacters out
+# of values entirely (generate secrets with `openssl rand -hex 32`, never a passphrase with & or
+# spaces). What each consumer does:
+#   Komodo writes the value verbatim. Quotes are not syntax to it: they end up in the file.
+#   `./scripts/update.sh` SOURCES the file as shell, so an unquoted & | ; < > ( ) ` or space breaks
+#     the deploy (DEFAULT_ADMIN_PASSWORD=M&Wnode&2000 gave "Wnode: command not found", 2026-08-21).
+#     A value like that MUST be quoted.
+#   docker compose strips surrounding quotes on ${VAR} interpolation, but `env_file:` does not — so a
+#     quoted value reaches some containers with the quotes still attached.
+# scripts/setup-app-env.sh lints for this, on the resolved values, before you deploy.
+#
+# Two values are always mangled and quoting does not save them: whitespace followed by # inside a
+# value is treated as an inline comment and truncates it ("a #b" is written as "a), and trailing
+# whitespace is trimmed. Both apply to interpolated values too, since Core substitutes before the
+# file is parsed.
 #
 # Three kinds of placeholder appear below:
 #
@@ -53,22 +61,25 @@
 # to anyone with read access. Do NOT try to override by putting the same name in the host's periphery
 # [secrets]: Core interpolates first and the periphery never sees it.
 #
-# One value is per host by default: JWT_SECRET. The app backends are PUBLIC, so a shared signing key
-# would let a token minted on one host authenticate as admin on every other tenant, over the
-# internet, with no network barrier in the way. It is generated per host at onboarding — see the KEYS
-# section below. BACKUP_ENCRYPTION_KEY stays fleet-wide by decision: restoring one host's backup on
-# another host is a wanted capability (failover drills, debugging), and that requires one key.
+# Two values are per host, both generated at onboarding into Komodo Variables <HOST>_JWT_SECRET and
+# <HOST>_DB_PASSWORD (provisioning/server.py) — no manual step, and never regenerated.
+#   JWT_SECRET   the app backends are PUBLIC, so a shared signing key would let a token minted on one
+#                host authenticate as admin on every other tenant, over the internet.
+#   DB_PASSWORD  it must match what that host's Postgres cluster was initialised with, so a
+#                fleet-wide value could only ever be right by luck.
+# BACKUP_ENCRYPTION_KEY stays fleet-wide by decision: restoring one host's backup on another host is
+# a wanted capability (failover drills, debugging), and that requires one key.
 #
 # And note the one value that is not free to choose: DB_PASSWORD must match what that host's Postgres
 # cluster was initialised with — the password lives inside the cluster, not in this file. Seeding a
 # host with a different one locks the app out of its own database.
 #
 # Fleet-wide Variables this template expects (as APPVAR_*/APPSECRET_* in the manager .env):
-#   POSTGRES_DB_PASSWORD, MONITOR_DB_PASSWORD, DEFAULT_TENANT_CONFIG_KEY, DEFAULT_ADMIN_PASSWORD,
+#   MONITOR_DB_PASSWORD, DEFAULT_TENANT_CONFIG_KEY, DEFAULT_ADMIN_PASSWORD,
 #   DEFAULT_BACKUP_ENCRYPTION_KEY, WEBHOOK_ALERTAS_TOKEN, SENTRY_DSN_BACKEND, VITE_SENTRY_DSN,
 #   ALERTAS_EMAIL_TO, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY, BACKUP_S3_SECRET_KEY,
 #   BACKUP_S3_ENDPOINT, BACKUP_S3_REGION
-# Plus, per host and created at onboarding: <HOST>_JWT_SECRET.
+# Plus, per host and created at onboarding: <HOST>_JWT_SECRET, <HOST>_DB_PASSWORD.
 
 KOMODO_MANAGED_FILE=do-not-edit-here-edit-the-repo-environment-in-komodo
 
@@ -103,7 +114,12 @@ PUBLIC_BIND_IP=CHANGE_ME
 DB_HOST=postgres
 DB_PORT=5432
 DB_USER=postgres
-DB_PASSWORD=[[POSTGRES_DB_PASSWORD]]
+# Per host, generated at onboarding into <HOST>_DB_PASSWORD. The password lives inside the Postgres
+# cluster (fixed when it was initialised), not in this file: a fleet-wide value could only ever be
+# right by luck, and being wrong locks the app out of its own database. Generating one per host makes
+# that mismatch impossible. Postgres listens on the mesh IP, but the ACL denies app-host-to-app-host
+# traffic, so this password is not a lateral-movement path between tenants either way.
+DB_PASSWORD=[[{{HOST_UPPER}}_DB_PASSWORD]]
 DB_MASTER_DATABASE=gims_master
 # Read-only role for monitoring (pghero + postgres-exporter). MONITOR_DB_PASSWORD must match the
 # manager's PGHERO_DB_PASSWORD — the manager keeps a single secret for the whole fleet, so this one
