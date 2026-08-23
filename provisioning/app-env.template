@@ -38,7 +38,7 @@
 #              not know is resolved by that host's Periphery agent from the [secrets] block of
 #              /etc/komodo/periphery.config.toml. Periphery-level secrets never cross the network
 #              and are scoped to that single host — that is how a value is kept per-host.
-#              An unknown name is NOT an error: it is written through literally. The on_pull guard
+#              An unknown name is NOT an error: it is written through literally. update.sh on the host
 #              refuses to deploy when that happens.
 #              CAUTION: a name that exists as a global Variable can NOT be overridden per host —
 #              Core resolves first and the periphery never sees it. For a per-host value, the name
@@ -46,8 +46,8 @@
 #
 #   CHANGE_ME  A per-host value nobody can derive. Filled in AFTER seeding, in the Komodo UI
 #              (Repos -> segcore-<host> -> Config -> Environment) — deliberately not in the manager's
-#              .env, so onboarding a host never means editing this repo. The on_pull guard aborts the
-#              deploy while any CHANGE_ME is still there.
+#              .env, so onboarding a host never means editing this repo. update.sh on the host aborts
+#              the deploy while any CHANGE_ME is still there.
 #
 # SECRETS ARE FLEET-WIDE BY DESIGN. Every [[NAME]] below is a Komodo Variable shared by the whole
 # segcore fleet, pushed from APPVAR_*/APPSECRET_* in the manager .env by scripts/setup-app-env.sh.
@@ -69,10 +69,6 @@
 #                fleet-wide value could only ever be right by luck.
 # BACKUP_ENCRYPTION_KEY stays fleet-wide by decision: restoring one host's backup on another host is
 # a wanted capability (failover drills, debugging), and that requires one key.
-#
-# And note the one value that is not free to choose: DB_PASSWORD must match what that host's Postgres
-# cluster was initialised with — the password lives inside the cluster, not in this file. Seeding a
-# host with a different one locks the app out of its own database.
 #
 # Fleet-wide Variables this template expects (as APPVAR_*/APPSECRET_* in the manager .env):
 #   MONITOR_DB_PASSWORD, DEFAULT_TENANT_CONFIG_KEY, DEFAULT_ADMIN_PASSWORD,
@@ -158,7 +154,7 @@ JWT_SECRET=[[{{HOST_UPPER}}_JWT_SECRET]]
 # falls back to JWT_SECRET when this is unset, so on a host that never had it, that is that host's
 # CURRENT JWT_SECRET. Setting anything else makes the stored credentials unreadable. (2) It must
 # never go back to empty: the fallback would silently return to JWT_SECRET, which by then may have
-# been rotated. The on_pull guard fails the deploy if it is empty.
+# been rotated. update.sh on the host fails the deploy if it is empty.
 TENANT_CONFIG_KEY=[[DEFAULT_TENANT_CONFIG_KEY]]
 
 # ================================================================

@@ -781,21 +781,21 @@ antes de avançar para a seguinte. Não criar tudo de uma vez.
 - **Não usar GitOps do Komodo** (sync de stacks a partir de git). Komodo aqui é apenas
   orquestrador de comandos. Razão: `update.sh` faz muito mais do que `docker compose up`
   (backup, migrations, manutenção) — GitOps seria refactor enorme com risco.
-- **TODO — mover o guard do `on_pull` para o `update.sh` do GIMSv2.** O `on_pull` dos Repos
-  `segcore-*` tem hoje um prelúdio de shell que recusa o deploy se o `.env` escrito ainda tiver
-  placeholders por resolver ou a `TENANT_CONFIG_KEY` vazia. A lógica está certa e testada, mas vive
-  **dentro de um campo de configuração**, e essa string atravessa sete camadas com regras de escape
-  diferentes: YAML do compose → variável de ambiente → JSON da API → base de dados → interpolador de
-  placeholders do Komodo → export TOML → shell. Já partiu três vezes por causa disso (o `$` que o
-  compose interpolava, as barras que o export TOML não escapa, o `[[` que o interpolador lê como
-  abertura de placeholder — 2026-08-21/22). Nenhuma foi erro de lógica; foram todas de representação.
-  A correcção é mover as verificações para o topo do `scripts/update.sh` do GIMSv2, onde são um
-  ficheiro em git lido só pelo bash (zero camadas de escape, versionado, revisto em PR e testável
-  localmente), e devolver o `on_pull` ao `./scripts/update.sh` simples. Não se perde funcionalidade.
-  Enquanto não for feito: as duas restrições de escrita estão documentadas em comentário no
-  `docker-compose.yml` e no `scripts/setup-app-env.sh` — **sem `[[` literal e sem barras**.
-  A verificação com mais valor é a da `TENANT_CONFIG_KEY` vazia: é a única que falha em silêncio (a
-  app cifra com o `JWT_SECRET` e só se descobre quando este for rodado).
+- **A validação do `.env` vive no `update.sh` do GIMSv2, não no `on_pull`** (feito 2026-08-23). As
+  verificações — placeholders `[[NOME]]` por resolver, `CHANGE_ME`, `TENANT_CONFIG_KEY` vazia, e o
+  ficheiro ser carregável por `source` — estão no topo do `scripts/update.sh` da app. O `on_pull` é
+  outra vez `./scripts/update.sh` e mais nada.
+  **Porquê, para não voltar atrás:** estiveram primeiro no `on_pull`, como prelúdio de shell, e
+  partiram três vezes em dois dias. Como *string* de configuração, atravessava sete camadas com
+  regras de escape diferentes — YAML do compose → variável de ambiente → JSON da API → base de dados
+  → interpolador de placeholders do Komodo → export TOML → shell — e cada uma apanhou-a por sua vez:
+  o `$` que o compose interpolava, as barras que o export TOML não escapa (tornando o
+  `read/ExportAllResourcesToToml` inválido), e um `[[` literal que o interpolador lê como abertura de
+  placeholder sem fecho (o `on_pull` também é interpolado). Nenhuma foi erro de lógica; foram todas
+  de representação. Num ficheiro em git, lido só pelo bash, não existe nenhuma dessas camadas.
+  O lint do `scripts/setup-app-env.sh` continua a apanhar os mesmos problemas mais cedo, no manager,
+  antes de haver deploy — e é complementar, não redundante: valida o Environment tal como está no
+  Komodo, incluindo edições feitas na UI.
 
 - **O `.env` da app é gerido pelo Komodo** (2026-08-20). O campo `environment` de cada Repo contém o
   ficheiro; o Komodo escreve-o em `/opt/SEGCORE/.env` (modo 0600) antes de cada `on_pull`. Isto **não

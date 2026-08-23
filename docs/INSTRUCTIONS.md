@@ -111,7 +111,7 @@ restorable on another. The app resolves
 `TENANT_CONFIG_KEY || JWT_SECRET || 'default-key-change-me'`, so two rules follow: its value must be
 the key the existing ciphertext was encrypted with (on a host that never had it set, that is that
 host's **current** `JWT_SECRET`), and it must never go back to empty, or at-rest encryption silently
-falls back to a `JWT_SECRET` that may since have been rotated. The `on_pull` guard fails the deploy
+falls back to a `JWT_SECRET` that may since have been rotated. `update.sh` on the host fails the deploy
 on an empty value.
 
 `BACKUP_ENCRYPTION_KEY` is fleet-wide by decision: restoring one host's backup on another (failover
@@ -124,8 +124,8 @@ override can **not** be done by putting the same name in the host's periphery `[
 interpolates first, so the periphery never sees it. Komodo Variables are also **not encrypted at
 rest** — the Core config file's `[secrets]` block is the hardening option for shared secrets.
 
-**Careful:** an unknown `[[NAME]]` is *not* an error — Komodo writes it through literally. The
-`on_pull` guard therefore aborts the deploy if any `[[` survives in the written `.env`.
+**Careful:** an unknown `[[NAME]]` is *not* an error — Komodo writes it through literally. Therefore
+`scripts/update.sh` in the app repo aborts the deploy if any `[[` survives in the written `.env`.
 
 **Komodo does not copy the environment verbatim**: it parses it into `KEY=value` pairs and
 re-serialises them, so comments and blank lines are stripped from the file the host receives. Values
@@ -166,8 +166,8 @@ Repo is seeded, open *Repos → `segcore-<host>` → Config → Environment* and
 host that needs its own `COMPOSE_PROJECT_NAME` or `NODE_ENV` gets it the same way: edit the line in
 its `environment`, or add one.
 
-Forgetting to fill one in is caught, not silently deployed: the `on_pull` guard aborts on `[[` **and**
-on `CHANGE_ME`.
+Forgetting to fill one in is caught, not silently deployed: `scripts/update.sh` in the app repo
+aborts on `[[` **and** on `CHANGE_ME`.
 
 The template is `provisioning/app-env.template`; new hosts are seeded from it automatically at
 onboarding (`provisioning/server.py`). The script only seeds an **empty** `environment` — once

@@ -18,7 +18,7 @@
 #   scripts/setup-app-env.sh --apply --only segcore-demo
 #   scripts/setup-app-env.sh --print segcore-demo   # render the .env for one host, to stdout
 #   scripts/setup-app-env.sh --vars-only --apply    # push Variables, touch no Repo
-#   scripts/setup-app-env.sh --guard-only --apply   # install the on_pull guard, keep environments
+#   scripts/setup-app-env.sh --set-on-pull --apply  # reset on_pull only, keep environments
 #
 # Fleet-wide values come from the manager .env:
 #   APPVAR_<NAME>=value      -> Komodo Variable <NAME>            (not a secret; value readable)
@@ -27,8 +27,8 @@
 # Per-host values are NOT configured here — that would mean editing this repo's .env for every new
 # host. Non-sensitive ones (LOCAL_BASE_DOMAIN, or a legacy host's own COMPOSE_PROJECT_NAME) are
 # edited in the Komodo UI on the Repo's Environment, after seeding; sensitive ones go in that host's
-# /etc/komodo/periphery.config.toml [secrets]. The template ships them as CHANGE_ME and the on_pull
-# guard refuses to deploy while a CHANGE_ME or an unresolved [[NAME]] is still in the written .env.
+# /etc/komodo/periphery.config.toml [secrets]. The template ships them as CHANGE_ME, and update.sh on
+# the host refuses to deploy while a CHANGE_ME or an unresolved [[NAME]] is still in the written .env.
 # Values that must never reach the manager database belong in the Core config [secrets] block or in
 # the host's periphery.config.toml instead — this script only lints those, it never writes them.
 #
@@ -51,13 +51,13 @@ die()  { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 command -v jq   >/dev/null || die "jq is required"
 command -v curl >/dev/null || die "curl is required"
 
-APPLY=0; FORCE=0; VARS_ONLY=0; GUARD_ONLY=0; ONLY=""; PRINT_ONLY=""
+APPLY=0; FORCE=0; VARS_ONLY=0; SET_ON_PULL=0; ONLY=""; PRINT_ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply)      APPLY=1 ;;
     --force)      FORCE=1 ;;
     --vars-only)  VARS_ONLY=1 ;;
-    --guard-only) GUARD_ONLY=1 ;;
+    --set-on-pull) SET_ON_PULL=1 ;;
     --only)      ONLY="${2:?--only needs a repo name}"; shift ;;
     --print)     PRINT_ONLY="${2:?--print needs a repo name}"; shift ;;
     -h|--help)   sed -n '2,36p' "$0"; exit 0 ;;
@@ -175,15 +175,13 @@ render() {
 # it to per-host — and remember to delete the global Variable, or Core keeps winning.
 PERIPHERY_SECRETS="${PERIPHERY_SECRETS:-}"
 
-# Last line of defence, on the host itself: refuse to deploy an .env that still carries a
-# placeholder, or whose TENANT_CONFIG_KEY is empty (at-rest encryption would silently fall back to
-# JWT_SECRET). Two constraints on how this string is written, both learned the hard way:
-#   no literal "[[" — Komodo interpolates on_pull too and reads it as an unclosed placeholder.
-#                     Matching the closing "]]" catches the same thing.
-#   no backslashes  — the TOML export writes it in a """...""" string without escaping them,
-#                     which makes read/ExportAllResourcesToToml emit invalid TOML.
-# Keep in sync with APP_ON_PULL in docker-compose.yml.
-ON_PULL_GUARD="if grep -qF -e ']]' -e 'CHANGE_ME' .env; then echo 'ERROR: unresolved placeholder in .env - refusing to deploy'; grep -nF -e ']]' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
+# The last line of defence — refusing to deploy an .env that still carries a placeholder, or whose
+# TENANT_CONFIG_KEY is empty — now lives at the top of scripts/update.sh in the app repo, where it is
+# a file in git read only by bash. It used to be a shell prelude in this string, and broke three
+# times on the escaping rules of the layers it crossed (compose YAML, env var, API JSON, database,
+# Komodo's interpolator, TOML export). The lint below catches the same problems on the manager,
+# before a deploy is even triggered. Keep in sync with APP_ON_PULL in docker-compose.yml.
+ON_PULL_COMMAND="${APP_ON_PULL_COMMAND:-./scripts/update.sh}"
 
 lint() {
   local rendered="$1" host="$2" rc=0 name assignments
@@ -201,7 +199,7 @@ lint() {
     rc=1
   done <<<"$(grep -o '\[\[[A-Za-z_][A-Za-z0-9_]*\]\]' <<<"$assignments" | tr -d '[]' | sort -u)"
   # CHANGE_ME is expected on a fresh seed: per-host values are filled in afterwards in the Komodo UI,
-  # not here. So it is a warning, not a failure — the on_pull guard is what stops a deploy while one
+  # not here. So it is a warning, not a failure — update.sh on the host is what stops a deploy while
   # is still there.
   # `update.sh` on the host SOURCES the .env as a shell script, so a value with an unquoted shell
   # metacharacter breaks the deploy — `DEFAULT_ADMIN_PASSWORD=M&Wnode&2000` became "Wnode: command
@@ -273,15 +271,15 @@ while read -r repo_name; do
   # so linting only the template would miss exactly the problems the UI can introduce.
   LINT_TARGET="template"; [ -n "$current" ] && LINT_TARGET="environment in Komodo"
 
-  # Install just the on_pull guard, leaving `environment` alone. For environments written by hand in
-  # the UI: --force would overwrite them, and they still need the guard.
-  if [ "$GUARD_ONLY" = 1 ]; then
+  # Set on_pull only, leaving `environment` alone — for an environment hand-written in the UI, which
+  # --force would overwrite.
+  if [ "$SET_ON_PULL" = 1 ]; then
     if [ "$APPLY" != 1 ]; then
-      echo "    would set the on_pull guard (environment untouched)"
+      echo "    would set on_pull (environment untouched)"
     else
-      kapi write/UpdateRepo "$(jq -n --arg id "$repo_name" --arg g "$ON_PULL_GUARD" \
+      kapi write/UpdateRepo "$(jq -n --arg id "$repo_name" --arg g "$ON_PULL_COMMAND" \
         '{id:$id, config:{on_pull:{path:"", command:$g, shell_mode:true}}}')" >/dev/null
-      info "on_pull guard set (environment untouched)."
+      info "on_pull set (environment untouched)."
     fi
     continue
   fi
@@ -304,10 +302,10 @@ while read -r repo_name; do
   fi
   [ $rc = 0 ] || die "refusing to --apply while the lint above fails"
 
-  kapi write/UpdateRepo "$(jq -n --arg id "$repo_name" --arg e "$rendered" --arg g "$ON_PULL_GUARD" \
+  kapi write/UpdateRepo "$(jq -n --arg id "$repo_name" --arg e "$rendered" --arg g "$ON_PULL_COMMAND" \
     '{id:$id, config:{environment:$e, env_file_path:".env", skip_secret_interp:false,
                       on_pull:{path:"", command:$g, shell_mode:true}}}')" >/dev/null
-  info "environment written (+ on_pull guard)."
+  info "environment written (+ on_pull)."
 done <<<"$(jq -r '.[].name' <<<"$REPOS")"
 
 echo
