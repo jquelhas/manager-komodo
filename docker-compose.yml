@@ -199,15 +199,19 @@ services:
       APP_GIT_REPO: "jquelhas/GIMSv2"
       APP_GIT_BRANCH: "main"
       APP_PATH: "/opt/SEGCORE"
-      # Guard first: Komodo writes the .env before on_pull, and an unresolved [[NAME]] is written
-      # through literally instead of failing (fail_on_missing_variable=false upstream). CHANGE_ME is
-      # the same hazard for the per-host values that are filled in in the Komodo UI after onboarding.
-      # Without this the app would boot with "[[...]]" as a password. Keep in sync with the same
-      # guard in scripts/setup-app-env.sh.
-      # The second check: an empty TENANT_CONFIG_KEY makes the app fall back to JWT_SECRET for
-      # at-rest encryption (TENANT_CONFIG_KEY || JWT_SECRET || 'default-key-change-me'), which turns
-      # a rotated JWT_SECRET into unreadable stored credentials. Silent, so fail the deploy instead.
-      APP_ON_PULL: "if grep -qF -e '[[' -e 'CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nF -e '[[' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
+      # Guard, before update.sh. Komodo writes the .env just before this runs, and an unresolved
+      # [[NAME]] is written through literally instead of failing (fail_on_missing_variable=false
+      # upstream); CHANGE_ME is the same hazard for the per-host values filled in in the UI. An empty
+      # TENANT_CONFIG_KEY is a third: at-rest encryption silently falls back to JWT_SECRET.
+      #
+      # Two constraints on how this string is WRITTEN, both learned the hard way:
+      #   no literal "[[" — Komodo interpolates on_pull too and reads it as an unclosed placeholder
+      #                     ("failed to interpolate variables into target", 2026-08-22). Matching the
+      #                     closing "]]" catches the same thing: a placeholder has both.
+      #   no backslashes  — the TOML export writes this in a """...""" string without escaping
+      #                     them, which makes read/ExportAllResourcesToToml emit invalid TOML.
+      # Keep in sync with ON_PULL_GUARD in scripts/setup-app-env.sh.
+      APP_ON_PULL: "if grep -qF -e ']]' -e 'CHANGE_ME' .env; then echo 'ERROR: unresolved placeholder in .env - refusing to deploy'; grep -nF -e ']]' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
       APP_TAG: "segcore"
       APP_ENV_TEMPLATE: "/app/app-env.template"
     volumes:

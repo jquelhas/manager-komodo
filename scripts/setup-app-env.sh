@@ -176,10 +176,14 @@ render() {
 PERIPHERY_SECRETS="${PERIPHERY_SECRETS:-}"
 
 # Last line of defence, on the host itself: refuse to deploy an .env that still carries a
-# placeholder, instead of booting the app with "[[APP_DB_PASSWORD]]" as its password or CHANGE_ME as
-# a domain. Covers both kinds: [[NAME]] (nothing resolved it) and CHANGE_ME (per-host value not yet
-# filled in in the Komodo UI). Keep in sync with APP_ON_PULL in docker-compose.yml.
-ON_PULL_GUARD="if grep -qF -e '[[' -e 'CHANGE_ME' .env; then echo 'ERROR: placeholder still in .env ([[...]] or CHANGE_ME) - refusing to deploy'; grep -nF -e '[[' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
+# placeholder, or whose TENANT_CONFIG_KEY is empty (at-rest encryption would silently fall back to
+# JWT_SECRET). Two constraints on how this string is written, both learned the hard way:
+#   no literal "[[" — Komodo interpolates on_pull too and reads it as an unclosed placeholder.
+#                     Matching the closing "]]" catches the same thing.
+#   no backslashes  — the TOML export writes it in a """...""" string without escaping them,
+#                     which makes read/ExportAllResourcesToToml emit invalid TOML.
+# Keep in sync with APP_ON_PULL in docker-compose.yml.
+ON_PULL_GUARD="if grep -qF -e ']]' -e 'CHANGE_ME' .env; then echo 'ERROR: unresolved placeholder in .env - refusing to deploy'; grep -nF -e ']]' -e 'CHANGE_ME' .env | cut -d= -f1; exit 1; fi; if grep -qx 'TENANT_CONFIG_KEY=' .env; then echo 'ERROR: TENANT_CONFIG_KEY is empty - refusing to deploy (at-rest encryption would silently fall back to JWT_SECRET)'; exit 1; fi; ./scripts/update.sh"
 
 lint() {
   local rendered="$1" host="$2" rc=0 name assignments
