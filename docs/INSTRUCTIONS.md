@@ -213,6 +213,56 @@ Alternativas manuais (⚠️ **não silenciam** — geram os e-mails de down/up 
 - Deploy git auth is a **read-only** fine-grained GitHub token (Komodo git account `github.com`/
   `jquelhas`); Komodo can pull, never push.
 
+## Internal TLS expired (`*.apps.internal`)
+
+Symptom: every internal service stops answering over HTTPS at once, and anything using the step-ca
+root as a CA bundle fails — including `scripts/setup-app-env.sh` and `scripts/setup-deploy-procedure.sh`:
+
+```
+curl: (60) SSL certificate OpenSSL verify result: certificate has expired (10)
+[x] cannot reach the Komodo API at https://komodo.apps.internal
+```
+
+Note this does **not** affect anything talking over the Docker network (`http://komodo-core:9120`) or
+the public entrypoint (Let's Encrypt, separate resolver) — so the control plane can look healthy while
+every internal UI is unreachable.
+
+Diagnose:
+
+```bash
+# which certificate is served, and until when
+echo | openssl s_client -connect 100.64.0.1:443 -servername komodo.apps.internal 2>/dev/null \
+  | openssl x509 -noout -dates
+# why the renewal failed
+docker logs --since 24h manager-traefik 2>&1 | grep -iE 'acme|renew|error' | tail -20
+```
+
+Two causes seen so far, both real:
+
+1. **step-ca was down when Traefik tried to renew.** Certificates live 24h and are renewed with zero
+   margin (see `docs/DESIGN.md`, "Margem de renovação"), so a 45-second outage is enough — and
+   `scripts/backup-manager.sh` stops step-ca for exactly that long. Traefik only retries 24h later.
+   Fix: `docker compose restart traefik`, which forces a renewal pass immediately.
+
+2. **A dead entry in the ACME store blocks the whole queue.** Traefik renews sequentially; a domain
+   that can never validate — one no longer routed, or missing from step-ca's `extra_hosts`, so the
+   TLS-ALPN challenge cannot resolve it — hangs and nothing after it renews. Look for a `Trying
+   renewal` line with a large negative `hoursRemaining` and no result after it. Fix:
+
+   ```bash
+   docker compose stop traefik
+   sudo cp -a docker/traefik/certs/acme-stepca.json docker/traefik/certs/acme-stepca.json.bak-$(date +%Y%m%dT%H%M%S)
+   sudo sh -c 'jq ".stepca.Certificates |= map(select(.domain.main != \"DEAD.apps.internal\"))" \
+     docker/traefik/certs/acme-stepca.json > /tmp/a && cat /tmp/a > docker/traefik/certs/acme-stepca.json && rm /tmp/a'
+   docker compose start traefik
+   ```
+
+   (2026-08-23: `test.apps.internal`, left over from bring-up and expired 38 days, was blocking every
+   other renewal.)
+
+Verify: re-run the `openssl s_client` above — `notAfter` should be ~24h ahead — and check the other
+hosts too, since one blocked entry stalls all of them.
+
 ## Alerting
 
 Two alert sources, **one inbox**. Alertmanager is the notification hub (SMTP e-mail); both sources

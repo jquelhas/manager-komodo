@@ -33,7 +33,7 @@ set -euo pipefail
 # ---- Defaults (this control plane) ----
 LOGIN_SERVER="${LOGIN_SERVER:-${KOMODO_LOGIN_SERVER:-https://komodo.segcore.eu}}"
 CORE_PUBLIC_KEY="${CORE_PUBLIC_KEY:-${KOMODO_CORE_PUBKEY:-MCowBQYDK2VuAyEAq4h7qO1p9pLMSxUgADHXY8IYtUnhcTwpLUyiNiuT2y8=}}"
-PERIPHERY_VERSION="${PERIPHERY_VERSION:-v2.2.0}"
+PERIPHERY_VERSION="${PERIPHERY_VERSION:-v2.3.2}"
 SETUP_URL="${SETUP_URL:-https://raw.githubusercontent.com/moghtech/komodo/${PERIPHERY_VERSION}/scripts/setup-periphery.py}"
 KOMODO_ROOT="${KOMODO_ROOT:-/etc/komodo}"
 # Periphery (and thus deploys) run as this user, in the docker group — so pull/on_pull files are

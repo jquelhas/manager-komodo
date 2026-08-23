@@ -263,6 +263,29 @@ Setup uma vez:
 3. Traefik configurado com `certificatesResolvers.stepca.acme.caServer=https://step-ca.apps.internal/acme/acme/directory`
    e `certificatesResolvers.stepca.acme.email=...`; pede cert por router automaticamente.
 
+#### ⚠️ Margem de renovação: zero (por corrigir)
+
+O step-ca emite certificados de **24 horas**, mas o resolver `stepca` em `docker/traefik/traefik.yml`
+**não define `certificatesDuration`** — o Traefik assume o default de 90 dias e agenda a renovação em
+função disso. O resultado observável é que cada certificado é renovado no próprio minuto em que
+expira: `notBefore 16:14:35` de um dia, `notAfter 16:15:35` do dia seguinte, renovado às 16:15:42.
+**Margem zero.** Qualquer indisponibilidade do step-ca nesse minuto expira o TLS de todos os
+`*.apps.internal` até à tentativa seguinte, 24h depois.
+
+Aconteceu a 2026-08-23: o `scripts/backup-manager.sh` pára o step-ca durante ~45s para copiar volumes
+de forma consistente (`QUIESCE`), e essa janela apanhou a renovação. Todos os serviços internos
+ficaram com certificado expirado durante ~80 minutos, até um restart do Traefik forçar nova tentativa.
+
+**Correcção**, uma linha no resolver `stepca`:
+
+```yaml
+      certificatesDuration: 24     # o step-ca emite 24h; o Traefik renova a 1/3 da vida -> 8h de margem
+```
+
+Com 8h de margem, parar o step-ca durante um backup deixa de ter consequência. Sem isso, a colisão
+volta a acontecer sempre que a hora do backup se aproximar da hora de emissão dos certificados — e o
+backup diário corre às 04:00, portanto é uma questão de quando, não de se.
+
 ### Onboarding do operador (laptop)
 
 Uma vez, no laptop:

@@ -378,7 +378,7 @@ services:
   # v2 auth is key-pair based (core.pub / periphery.pub); host periphery trust is set up at
   # onboarding (step 5), not here. No docker.sock on Core (only peripheries need it).
   komodo-core:
-    image: ghcr.io/moghtech/komodo-core:2.2.0          # latest stable (2026-05-07)
+    image: ghcr.io/moghtech/komodo-core:2.3.2          # latest stable (2026-08-11)
     container_name: manager-komodo-core
     restart: unless-stopped
     depends_on: [komodo-ferretdb]
