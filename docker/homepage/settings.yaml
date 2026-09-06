@@ -8,6 +8,9 @@ layout:
   Fleet:
     style: row
     columns: 3
+  Segurança:
+    style: row
+    columns: 4
   Control plane:
     style: row
     columns: 2

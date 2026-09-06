@@ -1,0 +1,12 @@
+[Unit]
+Description=Fast security sensor every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+# A 300s jitter on a 5-minute timer would be nonsense; a small one still avoids landing on the
+# same second as every other :00/:05 job on the box.
+RandomizedDelaySec=45
+Persistent=true
+
+[Install]
+WantedBy=timers.target

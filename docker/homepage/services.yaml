@@ -36,6 +36,48 @@
               label: Firing
               format: number
 
+- Segurança:
+    # secaudit — the auditor has no UI of its own by design: findings are metrics, so these are VM
+    # queries and the drill-down is the Grafana dashboard below. No siteMonitor: there is no
+    # service to monitor.
+    - Portas expostas fora da baseline:
+        icon: mdi-lan-disconnect-#f87171
+        description: bound e ausente da baseline
+        widget:
+          type: customapi
+          url: http://manager-victoriametrics:8428/api/v1/query?query=sum%28secaudit_unexpected_ports%7Bperspective%3D%22local%22%2Csuppressed%3D%220%22%7D%29%20or%20vector%280%29
+          refreshInterval: 60000
+          mappings:
+            - field: data.result.0.value.1
+              label: Portas
+              format: number
+    - Nomes internos mal configurados:
+        icon: mdi-dns-#fbbf24
+        description: DNS / step-ca / router
+        widget:
+          type: customapi
+          url: http://manager-victoriametrics:8428/api/v1/query?query=count%28secaudit_internal_name_misconfigured%20%3D%3D%201%29%20or%20vector%280%29
+          refreshInterval: 60000
+          mappings:
+            - field: data.result.0.value.1
+              label: Nomes
+              format: number
+    - Scans desactualizados:
+        icon: mdi-clock-alert-#fbbf24
+        description: fora do budget de frescura
+        widget:
+          type: customapi
+          url: http://manager-victoriametrics:8428/api/v1/query?query=%28count%28%28time%28%29%20-%20secaudit_scan_last_success_timestamp_seconds%29%20%3E%20on%28scan%29%20group_left%28%29%20secaudit_scan_max_age_seconds%29%29%20or%20vector%280%29
+          refreshInterval: 60000
+          mappings:
+            - field: data.result.0.value.1
+              label: Scans
+              format: number
+    - Dashboard de segurança:
+        icon: mdi-shield-search-#4ade80
+        description: postura da frota (Grafana)
+        href: https://grafana.apps.internal/d/security-overview
+
 - Control plane:
     - Komodo:
         href: https://komodo.apps.internal

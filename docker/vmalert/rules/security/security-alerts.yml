@@ -1,0 +1,183 @@
+# Security auditor ALERTING rules — evaluated by vmalert, sent to Alertmanager.
+# Metrics come from provisioning:8000/metrics/security (job "security"). See docs/plan/secaudit.md.
+#
+# Two conventions that must not be "tidied up" later:
+#
+#  1. Every rule carries `scope: secaudit` and NONE carries `app: segcore`. The deploy Procedure
+#     silences Alertmanager on the matcher app="segcore" for 30 minutes on every deploy
+#     (docker/komodo/actions/segcore-silence-on.ts). Labelling these alerts app="segcore" would
+#     blind the security stream during exactly the window when a new image lands.
+#
+#  2. Every finding rule filters suppressed="0". A suppression in security/suppressions.toml does
+#     not hide a finding — it relabels it suppressed="1", so it stays on the dashboard and keeps
+#     being exported. Only the alerting path honours it.
+#
+# `for:` with daily/weekly data: between scans the series is CONSTANT (rendered from state), so
+# `for` only delays the first notification. When a scan clears a finding the series DISAPPEARS and
+# the alert resolves — which is why the exporter must never emit a cleared finding as 0.
+groups:
+  - name: secaudit_freshness
+    interval: 5m
+    rules:
+      # One rule for every cadence: each scan's own budget travels as a metric, so a 5-minute
+      # sensor and a weekly scan are both covered without a rule each.
+      - alert: SecurityScanStale
+        expr: (time() - secaudit_scan_last_success_timestamp_seconds)
+                > on(scan) group_left() secaudit_scan_max_age_seconds
+        for: 30m
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security scan {{ $labels.scan }} is stale on {{ $labels.host }}"
+          description: "No successful run of {{ $labels.scan }} within its budget. A stale scan is NOT a clean scan: the findings shown are old. Check `systemctl status manager-security-fast.service` and run `scripts/secaudit.sh status`."
+
+      - alert: SecurityScanFailing
+        expr: secaudit_scan_last_status == 0
+        for: 2h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security scan {{ $labels.scan }} is failing on {{ $labels.host }}"
+          description: "The last run of {{ $labels.scan }} exited non-zero for 2h. Run it by hand: scripts/secaudit.sh run {{ $labels.scan }}."
+
+      # The single most likely way this whole system quietly dies: it runs, succeeds, and audits
+      # nothing.
+      - alert: SecurityScanTargetsEmpty
+        expr: secaudit_scan_targets < 1
+        for: 1h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security scan {{ $labels.scan }} has no targets"
+          description: "{{ $labels.scan }} succeeded but covered zero targets — it is auditing nothing."
+
+      - alert: SecurityDiscoveryDegraded
+        expr: secaudit_discovery_ok == 0 or secaudit_discovery_shrunk == 1
+        for: 1h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security target discovery is degraded"
+          description: "Discovery from Komodo failed, or returned far fewer targets than before and kept the cached list. Shrinking coverage must be a deliberate decision: check state/discovery.json for the reason."
+
+      - alert: SecurityExporterDown
+        expr: up{job="security"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security metrics exporter is down"
+          description: "VictoriaMetrics cannot scrape provisioning:8000/metrics/security. Every security alert is blind while this lasts."
+
+      - alert: SecurityStateUnreadable
+        expr: secaudit_exporter_state_error == 1
+        for: 30m
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security state file unreadable: {{ $labels.file }}"
+          description: "The exporter could not read or parse {{ $labels.file }}. Findings from it are absent, which must never be read as 'no findings'."
+
+      - alert: SecurityFindingsTruncated
+        expr: secaudit_findings_truncated == 1
+        for: 30m
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Security findings truncated for {{ $labels.family }}"
+          description: "{{ $labels.family }} hit the per-family series cap, so findings are being dropped. Usually a degenerate scan — investigate before raising the cap."
+
+  - name: secaudit_perimeter
+    interval: 5m
+    rules:
+      # The fastest signal in the system. `local` means BOUND to a routable address, which on this
+      # fleet is not the same as reachable (no host firewall; the external firewall is the gate) —
+      # so this is drift detection. The classic trigger is a stray `-p 5432:5432`.
+      - alert: UnexpectedExposedBind
+        expr: secaudit_port_unexpected{perspective="local",suppressed="0"} == 1
+        for: 10m
+        labels:
+          severity: critical
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: {{ $labels.proto }}/{{ $labels.port }} bound to {{ $labels.bind }} and not in the baseline"
+          description: "A service is bound to a routable address ({{ $labels.scope }}) on {{ $labels.host }} and is not in security/baseline/ports.toml. Either it should not be published, or the baseline needs an entry (permanent acceptance) or a dated suppression (temporary)."
+
+      - alert: UnexpectedOpenPortPublic
+        expr: secaudit_port_unexpected{perspective="public",suppressed="0"} == 1
+        for: 15m
+        labels:
+          severity: critical
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: {{ $labels.proto }}/{{ $labels.port }} reachable from the internet"
+          description: "An external scan reached {{ $labels.proto }}/{{ $labels.port }} on {{ $labels.host }} and it is not in the baseline. This measures the EXTERNAL FIREWALL allowlist, so it means the firewall permits it."
+
+      # The manager's baseline for the mesh perspective is empty because acl.hujson has no
+      # app-host -> manager rule. Anything here is an ACL regression. Do NOT "fix" it by widening
+      # the ACL — that destroys the deny-by-default that stops host-to-manager pivoting.
+      - alert: UnexpectedOpenPortMesh
+        expr: secaudit_port_unexpected{perspective="mesh",suppressed="0"} == 1
+        for: 1h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Headscale ACL regression: {{ $labels.proto }}/{{ $labels.port }} open on {{ $labels.host }} over the mesh"
+          description: "A mesh scan reached a port that docker/headscale/acl.hujson should deny. Fix the ACL, do not widen the baseline."
+
+      - alert: ExpectedPortClosed
+        expr: secaudit_port_missing{suppressed="0"} == 1
+        for: 30m
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: required port {{ $labels.proto }}/{{ $labels.port }} is not there"
+          description: "A port the baseline marks required_tcp was not observed on {{ $labels.host }} ({{ $labels.perspective }} perspective). Either the service is down or it stopped being published."
+
+  - name: secaudit_hardening
+    interval: 15m
+    rules:
+      # Automates steps 2-4 of the internal-service checklist. The `router` direction is the one
+      # that caused the 2026-08-23 outage: a step-ca extra_hosts entry with no router behind it can
+      # never answer TLS-ALPN-01, and one such entry stalls EVERY internal certificate renewal.
+      - alert: InternalNameMisconfigured
+        expr: secaudit_internal_name_misconfigured == 1
+        for: 1h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Internal name {{ $labels.name }} is missing from {{ $labels.missing }}"
+          description: "missing=dns -> add it to dns.extra_records in docker/headscale/config.yaml and restart headscale. missing=stepca_hosts -> add it to the step-ca extra_hosts block in docker-compose.yml. missing=router -> a step-ca extra_hosts entry has NO Traefik router: it can never complete TLS-ALPN-01 and it stalls the whole internal renewal queue. Remove it."
+
+  - name: secaudit_hygiene
+    interval: 1h
+    rules:
+      - alert: SecuritySuppressionInvalid
+        expr: secaudit_suppression_invalid == 1
+        for: 30m
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Invalid suppression: {{ $labels.kind }}/{{ $labels.key }} ({{ $labels.reason }})"
+          description: "This entry in security/suppressions.toml suppresses NOTHING (reason: {{ $labels.reason }}). Somebody probably believes a finding is silenced when it is not. Fix or remove the entry."
+
+      - alert: SecuritySuppressionExpiringSoon
+        expr: secaudit_suppression_expiry_timestamp_seconds - time() < 7 * 86400
+        for: 6h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Suppression for {{ $labels.kind }}/{{ $labels.key }} expires in under 7 days"
+          description: "Owner {{ $labels.owner }} ({{ $labels.ticket }}) accepted this finding until now. Renew it deliberately or fix the underlying issue — it is about to start alerting again."

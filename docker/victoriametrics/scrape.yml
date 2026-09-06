@@ -36,3 +36,15 @@ scrape_configs:
     metrics_path: /metrics/containers
     static_configs:
       - targets: ['provisioning:8000']
+
+  # Security auditor — the same central-exporter shape as komodo-containers, but reading local
+  # state files instead of the Komodo API. Its own job_name so up{job="security"} is meaningful.
+  # Re-timestamping day-old findings on every scrape is the intended semantics: current findings
+  # stay current until a scan supersedes them, and freshness travels separately in
+  # secaudit_scan_last_success_timestamp_seconds.
+  - job_name: 'security'
+    scrape_interval: 60s
+    scrape_timeout: 20s
+    metrics_path: /metrics/security
+    static_configs:
+      - targets: ['provisioning:8000']

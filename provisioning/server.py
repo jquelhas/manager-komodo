@@ -14,6 +14,8 @@ return the SAME 404 (no enumeration oracle), the uuid is validated as strict v4 
 filesystem access (+ realpath containment), and the uuid is REDACTED from logs (logging the
 path would log the secret). Response bodies are never logged.
 """
+import datetime
+import fnmatch
 import http.server
 import json
 import os
@@ -23,6 +25,7 @@ import shutil
 import socketserver
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.request
 
@@ -460,6 +463,381 @@ def container_metrics_text():
     return "\n".join(out) + "\n"
 
 
+# --- Security auditor exporter -----------------------------------------------------------------
+# Renders the state written by scripts/security-*.sh (mounted read-only at /security) as Prometheus
+# metrics, APPLYING POLICY AT SCRAPE TIME: the expected-ports baseline and the suppression list are
+# evaluated here, on every scrape, not baked in when the scan ran. So fixing a baseline entry or
+# letting a suppression lapse takes effect within one scrape interval (~60s) instead of at the next
+# scan — which for a weekly scan would be up to a week.
+#
+# This is deliberately the least privileged code in this file: it only parses local files, makes no
+# outbound call and takes no attacker-controlled input. The mount is :ro, so a compromise of this
+# (the one publicly-routed process in the stack) cannot forge or erase audit results.
+SECURITY_DIR = os.path.realpath(os.environ.get("SECURITY_DIR", "/security"))
+SECAUDIT_MAX_SUPPRESSION_DAYS = int(os.environ.get("SECAUDIT_MAX_SUPPRESSION_DAYS", "180"))
+_SEC_MAX_SERIES = 500  # per family. One degenerate scan must not fill a 60d TSDB on a 14GB disk.
+_SEC_CACHE = {}  # rel path -> ((mtime_ns, size), parsed)
+_SEC_LOCK = threading.Lock()
+
+# Max age per scan before it counts as stale. Emitted as a metric (secaudit_scan_max_age_seconds)
+# so ONE alert rule covers every cadence instead of one rule per scan. Only budgets for scans that
+# have actually reported are emitted, so the set grows as the later phases land.
+_SCAN_BUDGETS = {
+    "discovery": 900, "listeners": 900, "docker_ports": 900, "drift": 900,  # 5-minute sensors
+    "collect": 129600, "ports": 129600, "tls": 129600,                      # daily -> 36h
+    "web": 1036800,                                                         # weekly -> 12d
+}
+_SUPPRESSION_KINDS = ("port", "tls", "nuclei", "trivy", "bench", "lynis")
+
+
+def _sec_load(rel):
+    """mtime+size cached load of a JSON/TOML file under SECURITY_DIR. None on any error.
+
+    Returning None (rather than {}) is load-bearing: the caller turns it into
+    secaudit_exporter_state_error, so "no data" can never be read as "no findings".
+    """
+    path = os.path.join(SECURITY_DIR, rel)
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        with _SEC_LOCK:
+            _SEC_CACHE.pop(rel, None)
+        return None
+    with _SEC_LOCK:
+        hit = _SEC_CACHE.get(rel)
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        if rel.endswith(".toml"):
+            with open(path, "rb") as f:
+                val = tomllib.load(f)
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                val = json.load(f)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return None
+    with _SEC_LOCK:
+        _SEC_CACHE[rel] = (key, val)
+    return val
+
+
+def _sec_scope(addr):
+    """Classify a bind address. This is the whole point of the local sensor: 0.0.0.0 and the public
+    IP are exposed to whatever the external firewall permits, the mesh IP and loopback are not."""
+    if addr in ("0.0.0.0", "::", ""):
+        return "wildcard"
+    if addr.startswith("127.") or addr == "::1":
+        return "loopback"
+    # 100.64.0.0/16 is the Headscale IPv4 pool; fd7a:115c:a1e0::/48 is Tailscale's ULA prefix.
+    if addr.startswith("100.64.") or addr.startswith("fd7a:"):
+        return "mesh"
+    return "public"
+
+
+def sec_expected(baseline, role, host, perspective):
+    """Effective expected set for (role, host, perspective): role default, plus per-host extra_*,
+    minus per-host remove_*. `known` is False when the role has no defaults at all — the caller
+    must then NOT flag anything, or an unknown role produces an alert per open port."""
+    d = ((baseline.get("defaults") or {}).get(role) or {}).get(perspective) or {}
+    h = ((baseline.get("hosts") or {}).get(host) or {}).get(perspective) or {}
+    out = {"known": bool(d)}
+    for proto in ("tcp", "udp"):
+        allowed = set(d.get(proto) or [])
+        allowed |= set(h.get("extra_" + proto) or [])
+        allowed -= set(h.get("remove_" + proto) or [])
+        out[proto] = allowed
+    req = set(d.get("required_tcp") or []) | set(h.get("extra_required_tcp") or [])
+    out["required_tcp"] = req - set(h.get("remove_tcp") or [])
+    return out
+
+
+def sec_suppressions():
+    """Parse suppressions.toml into (valid, invalid). FAIL-CLOSED: anything questionable lands in
+    `invalid`, which suppresses NOTHING and raises secaudit_suppression_invalid. An operator who
+    believes they silenced a finding and did not is the worst possible outcome."""
+    doc = _sec_load("suppressions.toml")
+    if doc is None:
+        return [], [], False
+    valid, invalid = [], []
+    now = time.time()
+    horizon = now + SECAUDIT_MAX_SUPPRESSION_DAYS * 86400
+    for e in doc.get("suppress") or []:
+        kind = str(e.get("kind", ""))
+        host = str(e.get("host", ""))
+        match = str(e.get("match", ""))
+        raw = e.get("expires")
+        ent = {"kind": kind or "?", "host": host or "?", "match": match or "?",
+               "owner": str(e.get("owner", "")), "ticket": str(e.get("ticket", ""))}
+        why = ""
+        if kind not in _SUPPRESSION_KINDS:
+            why = "unknown_kind"
+        elif not host or not match:
+            why = "missing_host_or_match"
+        elif not str(e.get("reason", "")).strip():
+            why = "missing_reason"
+        elif not ent["owner"].strip():
+            why = "missing_owner"
+        else:
+            try:
+                d = datetime.datetime.strptime(str(raw), "%Y-%m-%d")
+                # End of that day, UTC: an entry expiring "today" is still valid all day.
+                exp = d.replace(tzinfo=datetime.timezone.utc).timestamp() + 86400
+            except (TypeError, ValueError):
+                why = "bad_expires"
+                exp = 0.0
+            if not why and exp <= now:
+                why = "expired"
+            elif not why and exp > horizon:
+                why = "beyond_horizon"   # kills "expires = 2099-01-01"
+            if not why:
+                ent["expires"] = exp
+                valid.append(ent)
+                continue
+        ent["invalid_reason"] = why
+        invalid.append(ent)
+    return valid, invalid, True
+
+
+def _sec_suppressed(valid, used, kind, host, key):
+    """(is_suppressed, expiry). Globs on both host and key, so one entry can cover a fleet or a
+    whole image. Records which entries matched, so unused ones can be reported as stale."""
+    for i, e in enumerate(valid):
+        if e["kind"] != kind:
+            continue
+        if fnmatch.fnmatch(host, e["host"]) and fnmatch.fnmatch(key, e["match"]):
+            used.add(i)
+            return True, e["expires"]
+    return False, None
+
+
+_SECURITY_FAMILIES = [
+    # Lifecycle — the anti-silent-failure core. A stale scan is not a clean scan.
+    ("secaudit_scan_last_run_timestamp_seconds", "gauge", "Unix time of the last run of a scan"),
+    ("secaudit_scan_last_success_timestamp_seconds", "gauge", "Unix time of the last SUCCESSFUL run"),
+    ("secaudit_scan_last_status", "gauge", "1 if the last run of a scan succeeded"),
+    ("secaudit_scan_duration_seconds", "gauge", "Duration of the last run of a scan"),
+    ("secaudit_scan_targets", "gauge", "Targets covered by the last run of a scan"),
+    ("secaudit_scan_max_age_seconds", "gauge", "Age at which a scan's results count as stale"),
+    ("secaudit_scan_skipped_total", "counter", "Times a scan skipped itself, by reason"),
+    ("secaudit_discovery_ok", "gauge", "1 if target discovery from Komodo succeeded"),
+    ("secaudit_discovery_shrunk", "gauge", "1 if discovery returned far fewer targets than before"),
+    ("secaudit_discovery_targets", "gauge", "Number of discovered targets"),
+    ("secaudit_target_incomplete", "gauge", "1 if a target is missing a field needed to audit it"),
+    ("secaudit_host_scannable", "gauge", "1 if the host is reachable for auditing"),
+    ("secaudit_exporter_state_error", "gauge", "1 if a state or policy file is missing/unparseable"),
+    ("secaudit_findings_truncated", "gauge", "1 if a family hit the series cap and was truncated"),
+    # Perimeter
+    ("secaudit_listener", "gauge", "A listening socket, by bind address and scope"),
+    ("secaudit_docker_published_port", "gauge", "A published container port, by bind address"),
+    ("secaudit_port_open", "gauge", "An observed open/exposed port"),
+    ("secaudit_port_unexpected", "gauge", "An exposed port that is not in the baseline"),
+    ("secaudit_port_missing", "gauge", "A baseline-required port that was not observed"),
+    ("secaudit_unexpected_ports", "gauge", "Count of unexpected ports per host and perspective"),
+    # Internal-service checklist drift
+    ("secaudit_internal_name_misconfigured", "gauge",
+     "1 if an internal name is missing from DNS/step-ca, or a step-ca entry has no router"),
+    # Suppression hygiene
+    ("secaudit_suppression_expiry_timestamp_seconds", "gauge", "Expiry of a valid suppression"),
+    ("secaudit_suppression_invalid", "gauge", "1 if a suppression entry is invalid (suppresses nothing)"),
+    ("secaudit_suppression_stale", "gauge", "1 if a valid suppression matches no current finding"),
+]
+
+
+def security_metrics_text():
+    """Prometheus exposition of the security auditor's state.
+
+    INVARIANT: per-finding series are emitted only while the finding exists, so an alert resolves
+    when a scan clears it; count series are always emitted, 0 when empty, so a dashboard never
+    reads `No data` and "clean" is never confused with "exporter broken".
+    """
+    samples = {name: [] for name, _t, _h in _SECURITY_FAMILIES}
+    errors = []
+
+    def add(metric, labels, value):
+        samples[metric].append((labels, value))
+
+    def lbl(**kw):
+        return ",".join(f'{k}="{_lbl(v)}"' for k, v in kw.items())
+
+    # ---- lifecycle ----------------------------------------------------------------------------
+    status = _sec_load("state/scan-status.json")
+    if status is None:
+        errors.append("state/scan-status.json")
+    else:
+        for entry in (status.get("scans") or {}).values():
+            scan, host = entry.get("scan", ""), entry.get("host", "")
+            l = lbl(scan=scan, host=host)
+            if entry.get("last_run") is not None:
+                add("secaudit_scan_last_run_timestamp_seconds", l, entry["last_run"])
+            if entry.get("last_success") is not None:
+                add("secaudit_scan_last_success_timestamp_seconds", l, entry["last_success"])
+            if entry.get("status") is not None:
+                add("secaudit_scan_last_status", l, int(entry["status"]))
+            if entry.get("duration") is not None:
+                add("secaudit_scan_duration_seconds", l, entry["duration"])
+            if entry.get("targets") is not None:
+                # host is part of the series, not just scan: from phase 2 the collect scan runs
+                # per host, and without it those runs would write conflicting samples to one
+                # series.
+                add("secaudit_scan_targets", l, entry["targets"])
+            if scan in _SCAN_BUDGETS:
+                add("secaudit_scan_max_age_seconds", lbl(scan=scan), _SCAN_BUDGETS[scan])
+        for key, count in (status.get("skips") or {}).items():
+            scan, _, reason = key.partition("|")
+            add("secaudit_scan_skipped_total", lbl(scan=scan, reason=reason), count)
+
+    disc = _sec_load("state/discovery.json")
+    if disc is None:
+        errors.append("state/discovery.json")
+    else:
+        add("secaudit_discovery_ok", "", 1 if disc.get("ok") else 0)
+        add("secaudit_discovery_shrunk", "", 1 if disc.get("shrunk") else 0)
+        add("secaudit_discovery_targets", "", disc.get("count", 0))
+        for inc in disc.get("incomplete") or []:
+            add("secaudit_target_incomplete",
+                lbl(host=inc.get("host", ""), field=inc.get("field", "")), 1)
+
+    targets = _sec_load("state/targets.json")
+    hosts = {}
+    if targets is None:
+        errors.append("state/targets.json")
+    else:
+        for t in targets.get("targets") or []:
+            hosts[t.get("host", "")] = t
+            add("secaudit_host_scannable", lbl(host=t.get("host", "")), t.get("scannable", 0))
+
+    baseline = _sec_load("baseline/ports.toml")
+    if baseline is None:
+        errors.append("baseline/ports.toml")
+        baseline = {}
+
+    valid_sup, invalid_sup, sup_ok = sec_suppressions()
+    if not sup_ok:
+        errors.append("suppressions.toml")
+    used_sup = set()
+
+    # ---- observed exposure, per host ----------------------------------------------------------
+    # observed[host] = {(proto, port): (bind, scope)} for scopes that mean "reachable from off-box".
+    observed = {}
+    evaluated = set()  # hosts we have fresh data for; only these get baseline verdicts
+
+    listeners = _sec_load("state/listeners.json")
+    if listeners is None:
+        errors.append("state/listeners.json")
+    else:
+        host = listeners.get("host", "manager")
+        evaluated.add(host)
+        for s in listeners.get("listeners") or []:
+            scope = _sec_scope(s.get("addr", ""))
+            add("secaudit_listener",
+                lbl(host=host, proto=s.get("proto", ""), port=s.get("port", ""),
+                    bind=s.get("addr", ""), scope=scope, process=s.get("process", "")), 1)
+            if scope in ("wildcard", "public"):
+                # setdefault, not assignment: a service bound on both 0.0.0.0 and :: is ONE
+                # finding, not two. It also keeps the suppression key (proto/port) 1:1 with the
+                # finding, so one suppression entry covers both families.
+                observed.setdefault(host, {}).setdefault(
+                    (s.get("proto", ""), s.get("port", 0)), (s.get("addr", ""), scope))
+
+    dports = _sec_load("state/docker-ports.json")
+    if dports is None:
+        errors.append("state/docker-ports.json")
+    else:
+        for host, hd in (dports.get("hosts") or {}).items():
+            if hd.get("ok"):
+                evaluated.add(host)
+            for p in hd.get("ports") or []:
+                scope = _sec_scope(p.get("addr", ""))
+                add("secaudit_docker_published_port",
+                    lbl(host=host, proto=p.get("proto", ""), port=p.get("port", ""),
+                        bind=p.get("addr", ""), scope=scope,
+                        container=p.get("container", "")), 1)
+                if scope in ("wildcard", "public"):
+                    observed.setdefault(host, {}).setdefault(
+                        (p.get("proto", ""), p.get("port", 0)), (p.get("addr", ""), scope))
+
+    # ---- baseline verdicts (perspective=local) ------------------------------------------------
+    # NOTE: `local` measures what is BOUND, not what is reachable. This machine has no host
+    # firewall — the external firewall is the authoritative gate and is invisible from here — so
+    # this is a DRIFT signal. Reachability is the `public` perspective (nmap, phase 3).
+    for host in sorted(evaluated):
+        role = (hosts.get(host) or {}).get("role", "")
+        exp = sec_expected(baseline, role, host, "local")
+        obs = observed.get(host, {})
+        unexpected = {"0": 0, "1": 0}
+        for (proto, port), (bind, scope) in sorted(obs.items()):
+            key = f"local/{proto}/{port}"
+            sup, _exp_ts = _sec_suppressed(valid_sup, used_sup, "port", host, key)
+            sl = "1" if sup else "0"
+            base = lbl(host=host, perspective="local", proto=proto, port=port,
+                       bind=bind, scope=scope, suppressed=sl)
+            add("secaudit_port_open", base, 1)
+            if exp["known"] and port not in exp.get(proto, set()):
+                add("secaudit_port_unexpected", base, 1)
+                unexpected[sl] += 1
+        for sl in ("0", "1"):
+            add("secaudit_unexpected_ports",
+                lbl(host=host, perspective="local", suppressed=sl), unexpected[sl])
+        if exp["known"]:
+            seen_tcp = {port for (proto, port) in obs if proto == "tcp"}
+            for port in sorted(exp["required_tcp"] - seen_tcp):
+                key = f"local/tcp/{port}"
+                sup, _e = _sec_suppressed(valid_sup, used_sup, "port", host, key)
+                add("secaudit_port_missing",
+                    lbl(host=host, perspective="local", proto="tcp", port=port,
+                        suppressed="1" if sup else "0"), 1)
+
+    # ---- internal-service checklist drift -----------------------------------------------------
+    drift = _sec_load("state/drift.json")
+    if drift is None:
+        errors.append("state/drift.json")
+    else:
+        for f in drift.get("findings") or []:
+            add("secaudit_internal_name_misconfigured",
+                lbl(name=f.get("name", ""), missing=f.get("missing", "")), 1)
+
+    # ---- suppression hygiene ------------------------------------------------------------------
+    for i, e in enumerate(valid_sup):
+        add("secaudit_suppression_expiry_timestamp_seconds",
+            lbl(kind=e["kind"], host=e["host"], key=e["match"],
+                owner=e["owner"], ticket=e["ticket"]), int(e["expires"]))
+        if i not in used_sup:
+            add("secaudit_suppression_stale",
+                lbl(kind=e["kind"], host=e["host"], key=e["match"]), 1)
+    for e in invalid_sup:
+        add("secaudit_suppression_invalid",
+            lbl(kind=e["kind"], host=e["host"], key=e["match"],
+                reason=e["invalid_reason"]), 1)
+
+    for f in errors:
+        add("secaudit_exporter_state_error", lbl(file=f), 1)
+
+    # ---- render, with a hard per-family series cap ---------------------------------------------
+    # The cap is what stands between one degenerate scan (a misparsed port range, nuclei with
+    # `info` enabled) and hundreds of thousands of series in a 60d TSDB on a 14GB disk. Hitting it
+    # is reported rather than silent, and the reporting family is rendered last so it can carry the
+    # verdict for every family above it — including itself, which is never capped.
+    out = []
+    truncated = []
+    for name, typ, help_ in _SECURITY_FAMILIES:
+        if name == "secaudit_findings_truncated":
+            continue
+        rows = samples[name]
+        if len(rows) > _SEC_MAX_SERIES:
+            truncated.append(name)
+            rows = rows[:_SEC_MAX_SERIES]
+        out.append(f"# HELP {name} {help_}")
+        out.append(f"# TYPE {name} {typ}")
+        for labels, val in rows:
+            out.append(f"{name}{{{labels}}} {val}" if labels else f"{name} {val}")
+    out.append("# HELP secaudit_findings_truncated 1 if a family hit the series cap and was truncated")
+    out.append("# TYPE secaudit_findings_truncated gauge")
+    for name in truncated:
+        out.append(f'secaudit_findings_truncated{{family="{name}"}} 1')
+    return "\n".join(out) + "\n"
+
+
 def entry_dir(uuid: str):
     """Return the containment-checked entry dir for a validated uuid, or None."""
     if not UUID_RE.match(uuid):
@@ -530,6 +908,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Per-container metrics exporter (internal only; VM scrapes it). Reuses Komodo stats.
         if self.path == "/metrics/containers":
             body = container_metrics_text().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # Security auditor exporter (internal only). Renders security/state + policy from disk;
+        # unlike /metrics/containers it makes no API call, so it stays fast and cannot hang.
+        if self.path == "/metrics/security":
+            body = security_metrics_text().encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(body)))

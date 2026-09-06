@@ -263,6 +263,23 @@ Two causes seen so far, both real:
 Verify: re-run the `openssl s_client` above — `notAfter` should be ~24h ahead — and check the other
 hosts too, since one blocked entry stalls all of them.
 
+## Security audit
+
+The control plane audits its own and the fleet's security posture. Runbook:
+[SECURITY-AUDIT.md](SECURITY-AUDIT.md); design and decision record:
+[plan/secaudit.md](plan/secaudit.md).
+
+Today (phase 1) a 5-minute sensor turns two things into metrics with alerts: any port **bound to a
+routable address** across the fleet — a stray `-p 5432:5432` is visible within 5 minutes, with no
+agent on the hosts — and drift in the internal-service checklist below, including the
+step-ca-entry-without-a-router case that stalls every internal certificate renewal (see *Internal
+TLS expired*). Findings land in the same inbox as everything else, on a `scope="secaudit"` route
+with a 24h repeat rather than the global 4h.
+
+Two commands worth knowing: `scripts/secaudit.sh status` and `scripts/secaudit.sh run all`.
+Policy (what is expected, what is accepted and until when) is in git under `security/` and is
+evaluated at scrape time, so an edit takes effect in ~60s without re-running a scan.
+
 ## Alerting
 
 Two alert sources, **one inbox**. Alertmanager is the notification hub (SMTP e-mail); both sources

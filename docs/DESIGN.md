@@ -220,9 +220,24 @@ Uma única porta pública, 1 IP, com Traefik a fazer routing por hostname/path:
 | `https://control.jose.tld/bootstrap.sh` | 443/tcp | Script estático de bootstrap para hosts novos |
 | `41641/udp` | 41641 | WireGuard direct connection (peer-to-peer tenta este porto) |
 
-Tudo o resto: firewall fecha. `nftables` no VPS do manager corta 22, 80, tudo excepto o acima.
-SSH ao manager também só via Tailscale (o `sshd` bindado em `100.64.0.1:22`, não em
-`0.0.0.0:22`).
+Tudo o resto: firewall fecha.
+
+> **Correcção (2026-09-04, verificado em produção).** Este parágrafo descrevia uma intenção que
+> não foi a implementada, e ficou dois meses a contradizer a realidade. O que existe:
+>
+> - **Não há firewall no host.** `ufw` está `ENABLED=no`/`inactive` e não há política INPUT em
+>   `nftables`. A **firewall externa (OVH) é a autoritária**, com a allowlist `443/tcp`,
+>   `41641/udp` e `60022/tcp`. Isto é deliberado: uma firewall no host não veria o DNAT que o
+>   Docker instala em `nat/DOCKER`, pelo que um `-p` publicado passaria por cima dela de qualquer
+>   forma.
+> - **O `sshd` escuta em `0.0.0.0:60022`**, não em `100.64.0.1:22`. É acesso break-glass, key-only,
+>   e é a allowlist externa que o restringe.
+>
+> Consequência para quem lê isto: **enumerar sockets no host não mede exposição** nesta frota. Só
+> um scan de fora mede o perímetro real. É por isso que o auditor de segurança separa as
+> perspectivas `local` (drift de bind), `public` (o que a firewall externa deixa passar) e `mesh`
+> (o que a ACL do Headscale permite) — ver `docs/plan/secaudit.md`. A allowlist externa passou a
+> ser verificada por medição em vez de por afirmação em documento.
 
 Alternativa considerada e rejeitada: bootstrap manual por SSH em vez de `curl | bash`. Decidiu-se
 manter o bootstrap público porque o endpoint `/setup-token` (que liberta chaves reais) exige

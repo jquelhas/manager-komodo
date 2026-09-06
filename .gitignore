@@ -7,3 +7,9 @@ provisioning/store/*
 
 # Homepage runtime logs + auto-generated defaults
 docker/homepage/logs/
+
+# Security auditor state: scan output, regenerated on every run, and an inventory of our own
+# weaknesses. The POLICY (baseline/*.toml, suppressions.toml) is tracked on purpose — every
+# accepted risk should be a reviewable diff.
+security/state/*
+!security/state/.gitkeep

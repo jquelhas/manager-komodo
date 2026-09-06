@@ -1,0 +1,19 @@
+[Unit]
+Description=manager-komodo fast security sensor (listeners, published ports, internal-name drift)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=docker
+WorkingDirectory=/opt/manager-komodo
+# Discovery first: the fast sensor classifies bind addresses using each host's mesh/public IP from
+# state/targets.json, and enumerates the fleet from it.
+ExecStart=/opt/manager-komodo/scripts/security-discover.sh
+ExecStart=/opt/manager-komodo/scripts/security-fast.sh
+# Needs docker, jq, ss and python3 on PATH. NOTE: CPUQuota/MemoryMax here would NOT bound the work
+# — the API calls run inside a `docker run` container, which lands in dockerd's cgroup, not this
+# unit's. There is nothing heavy here anyway; the native host bundle (phase 2) is where cgroup
+# limits belong and where they do apply.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin

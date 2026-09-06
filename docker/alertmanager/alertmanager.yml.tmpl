@@ -17,7 +17,18 @@ route:
   group_wait: 30s          # hold a new group briefly to batch related alerts
   group_interval: 5m       # how often to send updates for an existing group
   repeat_interval: 4h      # re-notify an unresolved alert this often
-  # Add `routes:` here later to split by severity/scope (e.g. critical -> a second inbox).
+  routes:
+    # Security-audit findings are a daily-digest problem, not a pager problem. Under the global
+    # 4h repeat, one persistent finding (say a fixable CRITICAL CVE in a base image) e-mails six
+    # times a day until somebody rebuilds — and the whole security stream ends up in an inbox
+    # filter within a week, taking the genuinely urgent alerts with it.
+    # Grouped without `server` because these alerts never carry it.
+    - matchers: ['scope="secaudit"']
+      receiver: email
+      group_by: ['alertname', 'host']
+      group_wait: 1m
+      group_interval: 12h
+      repeat_interval: 24h
 
 receivers:
   - name: email

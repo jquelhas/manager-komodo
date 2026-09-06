@@ -1,0 +1,76 @@
+# Expected-ports baseline for the security auditor. Read by the exporter in
+# provisioning/server.py AT SCRAPE TIME, so an edit here takes effect within ~60s with no re-scan.
+#
+# Effective expected set for (host, perspective) =
+#     defaults.<role>.<perspective>  ∪  hosts."<name>".<perspective>.extra_*
+#                                    −  hosts."<name>".<perspective>.remove_*
+# Anything observed open and NOT in the effective set  -> secaudit_port_unexpected
+# Anything in required_tcp and NOT observed            -> secaudit_port_missing
+#
+# Composition is explicit add/remove on purpose. Full-replace semantics would force every host to
+# restate the defaults, and a default added here later would then silently fail to apply to it.
+#
+# PERSPECTIVES — these measure three different things and must not be conflated:
+#   local   what is BOUND to a routable address on the machine itself (wildcard 0.0.0.0/:: or the
+#           host's own public IP). This machine has NO host firewall (ufw is ENABLED=no and there is
+#           no nftables INPUT policy) — the external OVH firewall is the authoritative gate and is
+#           invisible from inside. So `local` is a DRIFT signal, not a measure of exposure.
+#           Mesh-bound and loopback-bound listeners are reported (secaudit_listener) but NOT
+#           evaluated here: mesh exposure needs the per-host view from the native bundle (phase 2).
+#   public  what the EXTERNAL FIREWALL actually lets through, measured by nmap from outside
+#           (phase 3). This is the only real measure of the perimeter.
+#   mesh    what the HEADSCALE ACL permits, measured by nmap over the mesh (phase 3). An unexpected
+#           open port here is an acl.hujson regression, not bind drift.
+#
+# roles: "manager" (this machine) and the Komodo Server role for app hosts ("segcore").
+schema = 1
+
+# ---------------------------------------------------------------------------------------------
+# manager — this control plane. Matches the external firewall allowlist, which is authoritative:
+# 443/tcp (Traefik public entrypoint), 41641/udp (WireGuard direct), 60022/tcp (SSH break-glass).
+# ---------------------------------------------------------------------------------------------
+[defaults.manager.local]
+tcp = [443, 60022]
+# 68 is the DHCP client socket on the public interface (dhclient/systemd-networkd). It is an
+# outbound client, not a service, and it is permanent — a baseline entry, not a suppression.
+udp = [41641, 68]
+# 443 must always be bound: it is the only public entrypoint (Headscale coordination, onboarding).
+required_tcp = [443]
+
+[defaults.manager.public]
+tcp = [443, 60022]
+udp = [41641]
+required_tcp = [443]
+
+# The ACL has no app-host -> manager rule, so a scan of 100.64.0.1 from a host must find nothing.
+# If something shows up here it is an ACL regression — do NOT "fix" it by widening acl.hujson.
+[defaults.manager.mesh]
+tcp = []
+udp = []
+
+# ---------------------------------------------------------------------------------------------
+# segcore — app hosts. Public: 443 (app) and 80 (http->https redirect, SITE_HTTP_PORT).
+# Mesh: exactly what acl.hujson permits from tag:manager (backend 3000, postgres-exporter 9187,
+# periphery 8120, postgres 5432 for PGHero).
+# ---------------------------------------------------------------------------------------------
+[defaults.segcore.local]
+tcp = [443, 80, 60022]
+udp = [41641]
+required_tcp = [443]
+
+[defaults.segcore.public]
+tcp = [443, 80, 60022]
+udp = [41641]
+required_tcp = [443]
+
+[defaults.segcore.mesh]
+tcp = [3000, 9187, 8120, 5432]
+required_tcp = [8120]
+
+# ---------------------------------------------------------------------------------------------
+# Per-host deltas. Keep each one commented with WHY, and prefer a dated suppression in
+# security/suppressions.toml for anything meant to be temporary — a baseline entry is permanent
+# acceptance, a suppression expires and comes back for review.
+# ---------------------------------------------------------------------------------------------
+# [hosts."segcore-demo".local]
+# extra_tcp = [8080]     # example: only if a second public listener is a deliberate decision

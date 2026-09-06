@@ -1,0 +1,44 @@
+# Accepted security findings. Read by the exporter AT SCRAPE TIME, so an edit takes effect within
+# ~60s. In git on purpose: every accepted risk is a reviewable diff with an owner and an expiry.
+#
+# A suppression does NOT hide a finding. It relabels it: the finding series keeps being emitted with
+# suppressed="1", every count is emitted once per suppressed value, and the dashboard shows both.
+# Only the alert rules filter suppressed="0". Nothing ever disappears silently.
+#
+# FAIL-CLOSED RULES, all enforced in the exporter:
+#   - `expires` is MANDATORY (YYYY-MM-DD, treated as end of that day UTC). Missing, unparseable or
+#     already past  ->  the entry suppresses NOTHING and secaudit_suppression_invalid is emitted.
+#     An operator who believes they silenced something and did not is the worst possible outcome.
+#   - `expires` further ahead than SECAUDIT_MAX_SUPPRESSION_DAYS (default 180) is invalid. This
+#     kills "expires = 2099-01-01".
+#   - unknown `kind`, or a missing `reason` or `owner`  ->  invalid. Accepting a risk anonymously is
+#     not accepting it.
+# SecuritySuppressionExpiringSoon fires 7 days before expiry, so renewal is a deliberate decision
+# rather than a surprise alert.
+#
+# FIELDS
+#   kind    port | tls | nuclei | trivy | bench | lynis
+#   host    exact Komodo Server name, "manager", or an fnmatch glob ("*", "segcore-*")
+#   match   kind-specific key, fnmatch glob:
+#             port    <perspective>/<proto>/<port>     e.g. "local/tcp/60022", "public/tcp/*"
+#             tls     <port>/<finding-id>
+#             nuclei  <template-id>  or  <template-id>@<path>
+#             trivy   <image>/<CVE>  (glob "<image>/*")
+#             bench   <check-id>     e.g. "4.1"
+#             lynis   <test-id>      e.g. "SSH-7408"
+#   expires YYYY-MM-DD, mandatory, capped by SECAUDIT_MAX_SUPPRESSION_DAYS
+#   reason  why this is accepted, in a sentence. Mandatory.
+#   owner   who accepted it. Mandatory.
+#   ticket  optional reference
+schema = 1
+
+# No suppressions yet. Example of the intended shape:
+#
+# [[suppress]]
+# kind    = "port"
+# host    = "manager"
+# match   = "local/tcp/60022"
+# expires = "2026-12-31"
+# reason  = "SSH break-glass on 60022, gated by the external firewall allowlist; documented posture."
+# owner   = "jferreira@wavecom.pt"
+# ticket  = "OPS-142"

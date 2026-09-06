@@ -210,11 +210,20 @@ services:
       APP_ON_PULL: "./scripts/update.sh"
       APP_TAG: "segcore"
       APP_ENV_TEMPLATE: "/app/app-env.template"
+      # Security auditor exporter (/metrics/security). Reads the state the scans write on the
+      # host plus the policy files in git, and applies the baseline/suppressions AT SCRAPE TIME.
+      SECURITY_DIR: /security
+      SECAUDIT_MAX_SUPPRESSION_DAYS: "180"
     volumes:
       - ./provisioning/server.py:/app/server.py:ro
       # Single-file bind mount: editing the template needs `up -d --force-recreate provisioning`.
       - ./provisioning/app-env.template:/app/app-env.template:ro
       - ./provisioning/store:/store         # rw: burn deletes entries
+      # Security auditor state, READ-ONLY on purpose: the scans run as `ubuntu` under systemd
+      # timers and write here, this container only reads. So a compromise of the one publicly
+      # routed process in the stack can neither forge nor erase audit results. Mounted as a
+      # DIRECTORY (not per file) so the scans can mv files into place atomically.
+      - ./security:/security:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.provisioning.rule=Host(`${PUBLIC_DOMAIN}`) && PathPrefix(`/provisioning`)"
@@ -264,6 +273,7 @@ services:
       - "-notifier.url=http://alertmanager:9093"   # fire alerting rules to the notification hub
       - "-rule=/etc/vmalert/rules/apps/*.yml"
       - "-rule=/etc/vmalert/rules/platform/*.yml"
+      - "-rule=/etc/vmalert/rules/security/*.yml"
       - "-configCheckInterval=30s"   # hot-reload rule files on change
       - "-httpListenAddr=:8880"
       - "-external.url=https://vmalert.apps.internal"   # correct absolute links in the vmalert UI
