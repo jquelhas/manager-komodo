@@ -160,6 +160,18 @@ else
   fi
 fi
 
+# Remove what a previous layout left behind. Image CVE scanning moved to the application's CI on
+# 2026-09-08 and nothing here uses trivy any more, but an install from before that date leaves a
+# ~1.3 GB vulnerability database and the binary sitting on the host forever. An update that does
+# not clean up after itself is how disks fill quietly.
+for stale in "$PREFIX/bin/trivy" "$CACHE"; do
+  if [ -e "$stale" ]; then
+    info "  removing obsolete $stale ($(du -sh "$stale" 2>/dev/null | cut -f1))"
+    run rm -rf "$stale"
+  fi
+done
+rmdir "$PREFIX/bin" 2>/dev/null || true
+
 info "  installing run.py and versions.env"
 run install -m 0755 "$BUNDLE/run.py" "$PREFIX/run.py"
 run install -m 0644 "$BUNDLE/versions.env" "$PREFIX/versions.env"
