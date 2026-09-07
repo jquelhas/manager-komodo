@@ -186,6 +186,37 @@ docker exec manager-pghero-postgres wget -qO- \
   'http://victoriametrics:8428/api/v1/query?query=secaudit_port_unexpected'
 ```
 
+## Verifying the alert path itself
+
+Alertmanager is the one component whose failure is invisible: if it breaks, mail stops and nothing
+says so. After upgrading it, or changing SMTP, verify end to end — and note that **the log will not
+tell you**. At the default level it records notification *failures* only, so a silent success and a
+silent nothing look identical:
+
+```bash
+now=$(date -u +%Y-%m-%dT%H:%M:%S.000Z); end=$(date -u -d '+2 minutes' +%Y-%m-%dT%H:%M:%S.000Z)
+docker run --rm -i --network manager-komodo curlimages/curl:8.11.1 -sS -X POST \
+  -H 'Content-Type: application/json' http://alertmanager:9093/api/v2/alerts -d "[{
+  \"labels\":{\"alertname\":\"SmokeTest\",\"severity\":\"warning\",\"scope\":\"secaudit\"},
+  \"annotations\":{\"summary\":\"deliberate test, self-resolves\"},
+  \"startsAt\":\"$now\",\"endsAt\":\"$end\"}]"
+```
+
+The alert self-resolves in two minutes and you get a `[RESOLVED]` message after it. **Confirming
+the mail actually arrived is the verification** — everything short of that only proves Alertmanager
+accepted the alert, not that it delivered anything.
+
+Before an upgrade, validate the config with the NEW binary rather than discovering the problem
+after the swap:
+
+```bash
+docker run --rm -v manager-komodo_alertmanager-config:/etc/alertmanager:ro \
+  --entrypoint amtool prom/alertmanager:<new-tag> check-config /etc/alertmanager/alertmanager.yml
+docker run --rm -v manager-komodo_alertmanager-config:/etc/alertmanager:ro \
+  --entrypoint amtool prom/alertmanager:<new-tag> config routes test \
+  --config.file=/etc/alertmanager/alertmanager.yml scope=secaudit
+```
+
 ## Changing the metrics or the exporter
 
 The exporter is `security_metrics_text()` in `provisioning/server.py`. It is bind-mounted as a
