@@ -429,6 +429,13 @@ def container_metrics_text():
             continue  # server unreachable / no data — skip
         for c in conts:
             name = c.get("name", "")
+            # The secaudit couriers exit on purpose after every collection, so they would sit here
+            # as permanently not-running rows — an always-red line on the containers dashboard,
+            # which is how operators learn to ignore red. Their real state is reported by
+            # secaudit_host_enrolled / secaudit_report_age_seconds, where "exited" is correct.
+            # Filter on the name, not a label: ContainerListItem does not carry labels.
+            if name.startswith("secaudit-"):
+                continue
             lbl = f'host="{_lbl(host)}",name="{_lbl(name)}"'
             samples["komodo_container_running"].append((lbl, 1 if c.get("state") == "running" else 0))
             st = c.get("stats") or {}
@@ -522,10 +529,48 @@ def _sec_load(rel):
     return val
 
 
+def _sec_load_ndjson(rel):
+    """mtime+size cached load of a host report. Returns a list of records, or None."""
+    path = os.path.join(SECURITY_DIR, rel)
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        with _SEC_LOCK:
+            _SEC_CACHE.pop(rel, None)
+        return None
+    with _SEC_LOCK:
+        hit = _SEC_CACHE.get(rel)
+    if hit and hit[0] == key:
+        return hit[1]
+    recs = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    recs.append(json.loads(line))
+    except (OSError, ValueError):
+        return None
+    with _SEC_LOCK:
+        _SEC_CACHE[rel] = (key, recs)
+    return recs
+
+
+def sec_budget(budgets, host, key):
+    """Per-(host, section) budget, falling back to a generous default so a newly enrolled machine
+    does not page on day one, before anyone has looked at it."""
+    h = (budgets.get("hosts") or {}).get(host) or {}
+    if key in h:
+        return h[key]
+    return (budgets.get("defaults") or {}).get(key, 0)
+
 def _sec_scope(addr):
     """Classify a bind address. This is the whole point of the local sensor: 0.0.0.0 and the public
     IP are exposed to whatever the external firewall permits, the mesh IP and loopback are not."""
-    if addr in ("0.0.0.0", "::", ""):
+    # "*" is what ss prints for a dual-stack wildcard socket; without it the Komodo agent's
+    # listener was classified "public", which is the right verdict for the wrong reason.
+    if addr in ("0.0.0.0", "::", "*", ""):
         return "wildcard"
     if addr.startswith("127.") or addr == "::1":
         return "loopback"
@@ -634,6 +679,36 @@ _SECURITY_FAMILIES = [
     ("secaudit_port_unexpected", "gauge", "An exposed port that is not in the baseline"),
     ("secaudit_port_missing", "gauge", "A baseline-required port that was not observed"),
     ("secaudit_unexpected_ports", "gauge", "Count of unexpected ports per host and perspective"),
+    # Host bundle: enrolment and freshness. "not enrolled" is a DELIBERATE state (the fleet is
+    # enrolled one machine at a time) and is kept separate from staleness on purpose, so it never
+    # alerts.
+    ("secaudit_host_enrolled", "gauge", "1 if the host has the audit bundle installed and reporting"),
+    ("secaudit_report_age_seconds", "gauge", "Age of the host's last audit report"),
+    ("secaudit_report_partial", "gauge", "1 if the host's last report was cut short"),
+    ("secaudit_host_step_error", "gauge", "1 if a scanner step failed on the host"),
+    ("secaudit_tool_version_info", "gauge", "Installed scanner version, as a label"),
+    # OS hardening (lynis)
+    ("secaudit_lynis_finding", "gauge", "A lynis warning or suggestion"),
+    ("secaudit_lynis_findings", "gauge", "Count of lynis findings per section and severity"),
+    ("secaudit_lynis_findings_over_budget", "gauge", "Findings above the committed budget"),
+    ("secaudit_lynis_hardening_index", "gauge", "Lynis hardening index, 0-100 (trend only)"),
+    ("secaudit_packages_vulnerable", "gauge", "Packages with a known vulnerability, per lynis"),
+    # CIS Docker benchmark
+    ("secaudit_bench_failed", "gauge", "A failed CIS Docker Benchmark check"),
+    ("secaudit_bench_failures", "gauge", "Count of benchmark failures per section"),
+    ("secaudit_bench_failures_over_budget", "gauge", "Failures above the committed budget"),
+    ("secaudit_bench_score", "gauge", "docker-bench-security score (trend only)"),
+    # Image CVEs. Counts only — per-CVE detail lives in the on-disk archive, never in the TSDB.
+    ("secaudit_image_vulns", "gauge", "Vulnerabilities per image, by severity and fixability"),
+    ("secaudit_image_vulns_over_budget", "gauge",
+     "Fixable CVEs in running images above the host's committed budget"),
+    ("secaudit_images_scanned", "gauge", "Images scanned in the host's last run"),
+    ("secaudit_images_pending", "gauge", "Images the budget deferred to a later run"),
+    ("secaudit_trivy_db_age_seconds", "gauge", "Age of the trivy vulnerability database"),
+    ("secaudit_trivy_java_skipped", "gauge", "1 if Java archives are excluded from analysis"),
+    # Perimeter cross-scan, measured FROM a host
+    ("secaudit_perimeter_port_open", "gauge", "A port found open by the cross-scan"),
+    ("secaudit_perimeter_scan_timestamp_seconds", "gauge", "When the cross-scan last ran"),
     # Internal-service checklist drift
     ("secaudit_internal_name_misconfigured", "gauge",
      "1 if an internal name is missing from DNS/step-ca, or a step-ca entry has no router"),
@@ -756,6 +831,159 @@ def security_metrics_text():
                 if scope in ("wildcard", "public"):
                     observed.setdefault(host, {}).setdefault(
                         (p.get("proto", ""), p.get("port", 0)), (p.get("addr", ""), scope))
+
+    # ---- host bundle reports ------------------------------------------------------------------
+    # Collected through the couriers by scripts/security-collect.sh. This is where the OS-level
+    # findings enter: lynis, the CIS benchmark, image CVEs, the non-Docker listeners, and the
+    # perimeter cross-scan.
+    budgets = _sec_load("baseline/bench.toml")
+    if budgets is None:
+        errors.append("baseline/bench.toml")
+        budgets = {}
+    collect = _sec_load("state/collect.json")
+    if collect is None:
+        errors.append("state/collect.json")
+    for host, st in ((collect or {}).get("hosts") or {}).items():
+        status = st.get("status", "")
+        if status == "not_enrolled":
+            # Deliberate, not a fault: emit the fact and nothing else. No staleness, no alert.
+            add("secaudit_host_enrolled", lbl(host=host), 0)
+            continue
+        recs = _sec_load_ndjson(f"state/hosts/{host}.ndjson")
+        if recs is None:
+            add("secaudit_host_enrolled", lbl(host=host), 0)
+            continue
+        add("secaudit_host_enrolled", lbl(host=host), 1)
+
+        def rec(kind):
+            return [r for r in recs if r.get("k") == kind]
+
+        meta = (rec("meta") or [{}])[0]
+        end = (rec("end") or [{}])[-1]
+        if meta.get("ts"):
+            add("secaudit_report_age_seconds", lbl(host=host), int(time.time() - meta["ts"]))
+        add("secaudit_report_partial", lbl(host=host), 0 if end.get("ok") else 1)
+        for r in rec("tool"):
+            add("secaudit_tool_version_info",
+                lbl(host=host, tool=r.get("name", ""), version=r.get("version", "")), 1)
+        for r in rec("tool_error"):
+            add("secaudit_host_step_error", lbl(host=host, tool=r.get("tool", "")), 1)
+
+        # Listeners seen from INSIDE the host: the only view that includes non-Docker services
+        # (sshd, the Komodo agent, tailscaled) and the only one with process attribution.
+        listens = rec("listen")
+        if listens:
+            evaluated.add(host)
+            for r in listens:
+                scope = _sec_scope(r.get("addr", ""))
+                add("secaudit_listener",
+                    lbl(host=host, proto=r.get("proto", ""), port=r.get("port", ""),
+                        bind=r.get("addr", ""), scope=scope, process=r.get("process", "")), 1)
+                if scope in ("wildcard", "public"):
+                    observed.setdefault(host, {}).setdefault(
+                        (r.get("proto", ""), r.get("port", 0)), (r.get("addr", ""), scope))
+
+        # --- lynis ---
+        lyn_counts = {}
+        for r in rec("lynis"):
+            sev, section = r.get("severity", ""), r.get("section", "")
+            key = f"{r.get('test_id', '')}/{r.get('detail', '')}"
+            sup, _e = _sec_suppressed(valid_sup, used_sup, "lynis", host, key)
+            sl = "1" if sup else "0"
+            add("secaudit_lynis_finding",
+                lbl(host=host, test_id=r.get("test_id", ""), section=section,
+                    severity=sev, detail=r.get("detail", "")[:60], suppressed=sl), 1)
+            lyn_counts[(section, sev, sl)] = lyn_counts.get((section, sev, sl), 0) + 1
+        for (section, sev, sl), n in sorted(lyn_counts.items()):
+            add("secaudit_lynis_findings",
+                lbl(host=host, section=section, severity=sev, suppressed=sl), n)
+        for sev in ("warning", "suggestion"):
+            unsup = sum(n for (s, v, sl), n in lyn_counts.items() if v == sev and sl == "0")
+            budget = sec_budget(budgets, host, f"lynis_{sev}")
+            add("secaudit_lynis_findings_over_budget",
+                lbl(host=host, severity=sev), max(0, unsup - budget))
+        for r in rec("lynis_meta"):
+            add("secaudit_lynis_hardening_index", lbl(host=host), r.get("hardening_index", 0))
+        for r in rec("packages"):
+            add("secaudit_packages_vulnerable", lbl(host=host), r.get("vulnerable", 0))
+
+        # --- CIS docker benchmark ---
+        bench_counts = {}
+        for r in rec("bench"):
+            section = r.get("section", "")
+            sup, _e = _sec_suppressed(valid_sup, used_sup, "bench", host, r.get("id", ""))
+            sl = "1" if sup else "0"
+            add("secaudit_bench_failed",
+                lbl(host=host, id=r.get("id", ""), section=section, suppressed=sl), 1)
+            bench_counts[(section, sl)] = bench_counts.get((section, sl), 0) + 1
+        for (section, sl), n in sorted(bench_counts.items()):
+            add("secaudit_bench_failures", lbl(host=host, section=section, suppressed=sl), n)
+        unsup = sum(n for (s, sl), n in bench_counts.items() if sl == "0")
+        add("secaudit_bench_failures_over_budget",
+            lbl(host=host), max(0, unsup - sec_budget(budgets, host, "bench")))
+        for r in rec("bench_meta"):
+            add("secaudit_bench_score", lbl(host=host), r.get("score", 0))
+
+        # --- image CVEs. COUNTS only: a series per CVE would put tens of thousands of series in a
+        # 60-day TSDB for data no alert can act on. The detail is in var/secaudit/.
+        scanned = 0
+        for r in rec("image"):
+            if not r.get("ok"):
+                continue
+            scanned += 1
+            image = r.get("image", "")
+            sup, _e = _sec_suppressed(valid_sup, used_sup, "trivy", host, image)
+            sl = "1" if sup else "0"
+            for c in r.get("counts") or []:
+                add("secaudit_image_vulns",
+                    lbl(host=host, image=image, severity=c.get("sev", ""),
+                        fixable="1" if c.get("fixable") else "0",
+                        # A report written before in_use existed has no such key. Treat unknown
+                        # as IN USE: assuming otherwise would silently stop the alerts during the
+                        # rollout, which is the failure mode this whole system exists to avoid.
+                        in_use="0" if r.get("in_use") is False else "1", suppressed=sl),
+                    c.get("n", 0))
+        # The ratchet, per host: total fixable CVEs in RUNNING images against a committed budget.
+        # Per-image counts stay as series for the dashboard, but they are not what alerts — every
+        # third-party base image carries a fixable CRITICAL or two, continuously, and alerting on
+        # each one produced 40 simultaneous alerts the first time the whole fleet reported.
+        for sev in ("CRITICAL", "HIGH"):
+            total = 0
+            for r in rec("image"):
+                if not r.get("ok") or r.get("in_use") is False:
+                    continue
+                if _sec_suppressed(valid_sup, used_sup, "trivy", host, r.get("image", ""))[0]:
+                    continue
+                for c in r.get("counts") or []:
+                    if c.get("sev") == sev and c.get("fixable"):
+                        total += c.get("n", 0)
+            budget = sec_budget(budgets, host, f"image_{sev.lower()}_fixable")
+            add("secaudit_image_vulns_over_budget",
+                lbl(host=host, severity=sev), max(0, total - budget))
+        add("secaudit_images_scanned", lbl(host=host), scanned)
+        add("secaudit_images_pending", lbl(host=host), len(rec("image_skipped")))
+        for r in rec("trivy_db"):
+            add("secaudit_trivy_db_age_seconds", lbl(host=host), r.get("age_seconds", 0))
+        for r in rec("trivy_policy"):
+            add("secaudit_trivy_java_skipped", lbl(host=host),
+                0 if r.get("java") == "full" else 1)
+
+        # --- perimeter cross-scan, run FROM this host against the manager ---
+        for r in rec("scan_ok"):
+            add("secaudit_perimeter_scan_timestamp_seconds",
+                lbl(source_host=host, target=r.get("target", "")), meta.get("ts", 0))
+        for r in rec("port"):
+            target = r.get("target", "")
+            # manager_public must match the external firewall allowlist; manager_mesh must be
+            # EMPTY, because acl.hujson has no app-host -> manager rule. Anything there is an ACL
+            # regression, which is why `expected` is computed rather than assumed.
+            persp = "mesh" if target.endswith("_mesh") else "public"
+            exp = sec_expected(baseline, "manager", "manager", persp)
+            proto = r.get("proto", "tcp")
+            ok = exp["known"] and r.get("port") in exp.get(proto, set())
+            add("secaudit_perimeter_port_open",
+                lbl(source_host=host, target=target, ip=r.get("ip", ""), proto=proto,
+                    port=r.get("port", ""), expected="1" if ok else "0"), 1)
 
     # ---- baseline verdicts (perspective=local) ------------------------------------------------
     # NOTE: `local` measures what is BOUND, not what is reachable. This machine has no host

@@ -54,8 +54,22 @@ udp = []
 # periphery 8120, postgres 5432 for PGHero).
 # ---------------------------------------------------------------------------------------------
 [defaults.segcore.local]
-tcp = [443, 80, 60022]
-udp = [41641]
+# 8120 is Komodo Periphery, and its wildcard bind is DELIBERATE, not drift. Binding it to the mesh
+# IP would recreate the boot-ordering deadlock that left the manager with no Traefik and no mesh
+# after a reboot on 2026-09-06 (see docs/INSTRUCTIONS.md), so bootstrap/onboard-host.sh pins the
+# bind to [::] on purpose and names three layers of access control instead:
+#   1. periphery's own allowed_ips — verified: it rejects with "requesting ip ... not allowed"
+#      before any authentication happens
+#   2. the Core key pair
+#   3. the external firewall — verified closed from a third-party source on 2026-09-07: packets
+#      from an outside address are DROPPED, while the manager's public IP is allowlisted
+# This is a permanent architectural fact, so it belongs here rather than in a dated suppression.
+# NOTE it is deliberately NOT in [defaults.segcore.public]: from an arbitrary source the port is
+# closed, and the `public` perspective must keep saying so — that is what would catch the firewall
+# rule being removed.
+tcp = [443, 80, 60022, 8120]
+# 68 is the DHCP client, same permanent fact as on the manager. Not a service.
+udp = [41641, 68]
 required_tcp = [443]
 
 [defaults.segcore.public]

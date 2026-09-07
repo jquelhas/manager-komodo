@@ -263,6 +263,60 @@ Two causes seen so far, both real:
 Verify: re-run the `openssl s_client` above — `notAfter` should be ~24h ahead — and check the other
 hosts too, since one blocked entry stalls all of them.
 
+## Manager reboot: Traefik / mesh deadlock
+
+**Symptom.** After a reboot of the manager, nothing internal answers (`komodo.apps.internal`,
+`home.apps.internal`, ...), the public site is down too, and `tailscale status` says:
+
+```
+You are logged out. The last login error was: fetch control key:
+Get "https://komodo.segcore.eu/key?v=138": dial tcp 145.239.197.177:443: connect: connection refused
+```
+
+**Cause — a circular dependency, hit for real on 2026-09-06.** Traefik publishes two entrypoints:
+`${PUBLIC_IP}:443` and `100.64.0.1:443` (the host's Tailscale address). `100.64.0.1` only exists
+once tailscaled has a session, and tailscaled gets that session from Headscale, which sits *behind
+Traefik on 443*:
+
+```
+tailscaled logged out -> 100.64.0.1 does not exist
+  -> Docker cannot bind 100.64.0.1:443 -> Traefik will not start
+    -> nothing on :443 -> tailscaled can never log in
+```
+
+The only visible symptom is one line in the start error:
+`failed to bind host port 100.64.0.1:443/tcp: cannot assign requested address`.
+
+**Permanent fix (already applied).** `net.ipv4.ip_nonlocal_bind=1`, versioned at
+[`scripts/sysctl/60-manager-komodo.conf`](../scripts/sysctl/60-manager-komodo.conf). Traefik then
+binds the address before it exists; when tailscaled logs in and the address appears on
+`tailscale0`, the socket starts serving. If a rebuilt host is missing it:
+
+```bash
+sudo cp scripts/sysctl/60-manager-komodo.conf /etc/sysctl.d/ && sudo sysctl --system
+```
+
+**If you are in the deadlock right now:**
+
+```bash
+sudo sysctl -w net.ipv4.ip_nonlocal_bind=1
+docker compose rm -sf traefik && docker compose up -d traefik   # rm -sf, not just up -d: see below
+tailscale status            # the mesh recovers on its own within seconds
+```
+
+**Why `rm -sf` and not `up -d`.** A start that fails *during* network setup leaves the container
+existing but with **no network attached** — `docker inspect ... .NetworkSettings.Networks` returns
+`{}`. A later `docker compose up -d` merely *starts* that broken container, and Traefik then comes
+up with the host's `/etc/resolv.conf` (`nameserver 127.0.0.53`, which is nothing inside a
+container), so it cannot resolve `socket-proxy` and publishes no ports. It looks healthy in
+`docker ps` and serves nothing. Removing the container is what forces a clean network attach.
+
+Check for that state with:
+
+```bash
+docker inspect manager-traefik --format '{{json .NetworkSettings.Networks}}'   # {} means broken
+```
+
 ## Security audit
 
 The control plane audits its own and the fleet's security posture. Runbook:

@@ -42,7 +42,7 @@ nothing at rest, and runs for 1-3 minutes a day.
 | Tool | Form | Role |
 |---|---|---|
 | `lynis` | upstream tarball (CISOfy), version + SHA-256 pinned | OS hardening: sshd, sysctl/kernel, permissions, accounts, auth policy, pending security updates, banners |
-| `docker-bench-security` | upstream tarball `v1.6.1` (2026-06-04, CIS 1.6.0), SHA-256 pinned | CIS Docker Benchmark: daemon config, privileged containers, exposed `docker.sock`, images without a user, restart policies |
+| `docker-bench-security` | upstream tarball `v1.6.1`, SHA-256 pinned | CIS Docker Benchmark: daemon config, privileged containers, exposed `docker.sock`, images without a user, restart policies. **Caveat, corrected 2026-09-06:** v1.6.1 was released 2023-12-20, not 2026-06-04 — that date is the repo's last *commit*, which an earlier draft of this document conflated with the release. Upstream is maintained but slow: the encoded benchmark is CIS 1.6.0 against Docker 29.6.1 here, so some checks are dated. Still far better than the 2019 Docker Hub image, and the per-section budget design (alert on regression, not on absolute count) is what makes dated checks tolerable. |
 | `trivy` | single release binary, version + SHA-256 pinned | CVEs in **local** images, including host-built ones (`gimsv2-backend:latest`, `segcore-site:current`) |
 | `ss` (iproute2, already present) | — | socket and bind-address enumeration, with process attribution (runs as root) |
 | `nmap` (apt, only on the cross-scan host) | — | the manager's public perimeter, seen from outside |
@@ -383,11 +383,11 @@ secaudit_image_scan_status{image}   secaudit_trivy_db_age_seconds{host}
 secaudit_bench_failed{host,id,section,suppressed}
 secaudit_bench_failures{host,section,suppressed}
 secaudit_bench_failures_over_budget{host,section}    secaudit_bench_score{host}
-secaudit_lynis_warning{host,test_id,section,suppressed}
-secaudit_lynis_warnings{host,section,suppressed}
-secaudit_lynis_warnings_over_budget{host,section}
-secaudit_lynis_suggestions{host,section}             secaudit_lynis_hardening_index{host}
-secaudit_packages_security_updates{host}
+secaudit_lynis_finding{host,test_id,section,severity,detail,suppressed}
+secaudit_lynis_findings{host,section,severity,suppressed}
+secaudit_lynis_findings_over_budget{host,section,severity}
+secaudit_lynis_hardening_index{host}
+secaudit_packages_vulnerable{host}
 secaudit_internal_name_misconfigured{name,missing}
 secaudit_tool_version_info{host,tool,version}
 ```
@@ -408,8 +408,16 @@ Decisions that matter:
   both docker-bench and Lynis. Both warn about dozens of things nobody will fix on a VPS; alerting
   on the absolute count is guaranteed noise, alerting on regression above a committed budget is a
   ratchet. `lynis_hardening_index` and suggestions are trend-only.
-- **`secaudit_packages_security_updates{host}`** is the most actionable finding Lynis brings and
-  existed in no other source. Alerts above 0 with `for: 24h`.
+- **`secaudit_packages_vulnerable{host}`** (Lynis `vulnerable_packages_found`) is the most
+  actionable finding Lynis brings and existed in no other source. Alerts above 0 with `for: 24h`.
+- **Lynis findings are keyed by `(test_id, detail)`, and suggestions are first-class.** Corrected
+  2026-09-06 after running the tool: Lynis emits almost everything as `suggestion[]` and almost
+  nothing as `warning[]` (41 vs 1 on the manager). An earlier draft alerted on warnings and kept
+  suggestions as a trend-only count, which would have missed the substance entirely — including
+  the SSH hardening items that motivated this phase. Both are emitted as findings with a
+  `severity` label. The `detail` label is required because one test id covers several items:
+  `SSH-7408` alone produces six distinct suggestions (`MaxAuthTries`, `AllowTcpForwarding`, ...)
+  that would otherwise collapse into a single series.
 - **`secaudit_internal_name_misconfigured{name,missing}`** cross-checks live Traefik router `Host()`
   names against `dns.extra_records`, step-ca `extra_hosts` and `services.yaml`.
   `missing` ∈ `dns|stepca_hosts|homepage`. Automates steps 2-4 of the checklist and pre-empts the
@@ -565,12 +573,94 @@ repo.
    reported (`secaudit_listener` with `scope="mesh"`) but not evaluated against the baseline: the
    Docker-API view only sees published ports, so a mesh verdict needs the native bundle's socket
    table first.
-2. **[TODO] Native bundle + courier + `security-collect`.** `install-secaudit.sh` on the manager
+2. **[DONE] Native bundle + courier + `security-collect`.** The bundle, the installer and the
+   host units are built and validated on the manager (2026-09-06). The courier Deployments and
+   `security-collect.sh` are not written yet, and no host has the bundle installed. What testing on
+   the manager — deliberately the worst-case machine — changed:
+
+   - **A killed run used to lose everything.** The report was only written at the end, so a
+     `TimeoutStartSec` kill at 28 minutes discarded the work AND left the manager serving the
+     previous run's data with no signal. `run.py` now checkpoints after every step and flushes on
+     SIGTERM with `partial: true` in the `end` record. Verified by killing a run at 60s: 622
+     records survived, correctly marked partial.
+   - **`--skip-java-db-update` aborted the scan of any image containing JARs.** The plan assumed no
+     image in the fleet had Java; `ankane/pghero` does, and trivy fails hard rather than degrading.
+     Java archives are now excluded from analysis by default and the resulting gap is published
+     (`SECAUDIT_TRIVY_JAVA`, and a `trivy_policy` record) instead of being silent.
+   - **The trivy step had no budget of its own** and let the unit SIGTERM it mid-image. It now stops
+     cleanly at `TIMEOUTS["trivy"]` and reports how many images it did not reach.
+   - **Alphabetical order plus a step budget meant the tail of the list would never be scanned,
+     permanently and silently.** A persisted cursor now rotates the starting point between runs, so
+     every image is reached within a few days, and unscanned images are emitted as `image_skipped`.
+   - **Capacity, measured not guessed:** the manager (2 vCPU, 29 images, 10 GB) gets through about
+     14 images in a 30-minute budget; large language-heavy images like `grafana/grafana` take 200s+
+     on their own. This is a property of the box, not a bug — the app hosts have 4-8 cores and
+     23-31 GB and will not hit it. Rotation is what makes partial coverage acceptable.
+   - **Containment verified under real load:** during a full scan the cgroup pinned at 767-770 MB
+     against `MemoryHigh=768M`, host free memory *rose* rather than collapsing, and all 16
+     containers stayed up. The same workload run OUTSIDE the unit the day before OOM-killed
+     VictoriaMetrics and took the host down. Run it through systemd, never `./run.py`.
+
+   **Rollout as it actually stands (2026-09-06):** the bundle is installed on the manager (timer
+   disabled — it is the tight machine and a full trivy pass takes ~33 min there) and on
+   `segcore-demo`, which is the only machine with the timer enabled. `segcore-host1` is
+   deliberately left for later: it carries the real tenants, and a soak on the machine without
+   them costs nothing. Consequence for the collector, which is not written yet: a host with no
+   bundle must be a distinct, NON-alerting state — not staleness. Treating "never enrolled" as
+   "stale" would page about a decision that was made on purpose.
+
+   First real run on `segcore-demo` (292s, 454 records, zero errors) produced these findings, which
+   are what the tool exists for and are tracked outside this document:
+   - Komodo Periphery `:8120` is reachable from the internet on BOTH app hosts. The bind is
+     deliberately wildcard (`onboard-host.sh:194` — binding it to the mesh IP would recreate the
+     boot-ordering deadlock that took Traefik down on the manager), and the design names three
+     layers: `allowed_ips`, the Core key, and the host firewall. The first two hold — verified, it
+     rejects with `requesting ip ... not allowed` before any auth. The third is simply absent.
+   - SSH posture is inconsistent: `demo` exposes 22 (key-only), `host1` exposes 60022 and accepts
+     PASSWORDS, and the manager exposes 60022 key-only. The weakest is the host with real tenants.
+   - `traefik:v3.6.13` on demo vs `v3.7.7` on the manager: the internet-facing component is behind.
+   - 11 fixable CRITICAL and 291 fixable HIGH CVEs across 12 images.
+   - Baselines for the ratchet: lynis hardening index 65 (manager 68), docker-bench 33 failures of
+     117 checks.
+
+   Completed 2026-09-06: `scripts/setup-secaudit.sh` (two couriers per server, with the
+   name-collision assertion and the `network: "none"` echo-check), `scripts/security-collect.sh`,
+   the host-report metric families in the exporter, `security/baseline/bench.toml`, 11 new alert
+   rules in three groups, four dashboard panels, and the `secaudit-*` filter in
+   `container_metrics_text()` — which only became necessary once the couriers existed.
+
+   Two things the first fleet collection changed:
+   - **`in_use` on image findings.** `mongo:8.0` still sits on the manager from before the move to
+     FerretDB, with 272 fixable CVEs and no container behind it. Alerting on it would be alerting
+     on surface that does not exist, forever. Images are now labelled by whether they back a
+     running container, the alerts filter on it, and the budget scans running images first. A
+     report written before the field existed is treated as in-use, because assuming otherwise
+     would silently switch the alerts off during a rollout.
+   - **`*` is a wildcard bind.** `ss` prints `*:8120` for a dual-stack socket, which the scope
+     classifier read as "public" — the right verdict for the wrong reason.
+
+   Still open: `install-secaudit.sh` on the manager
    first, then `segcore-demo` (the host without real tenants — that is where you find out what goes
    wrong), then `segcore-host1`. The bundle brings lynis + docker-bench + trivy + listeners at once,
    because they share one `run.sh`, one timer and one collection channel: splitting them would not
    reduce risk, only duplicate work. Includes the onboarding step.
-3. **[TODO] `ports` (daily top-200 + shards) + cross-scan in the designated host's `run.sh`.** Starts
+3. **[TODO] `ports` (daily top-200 + shards) + cross-scan in the designated host's `run.sh`.**
+
+   **Design flaw found 2026-09-07, before any of this was built.** The plan says the manager runs
+   nmap against each app host's public IP to measure its perimeter. That measurement can be blind:
+   the manager is the single source most likely to be in the external firewall's allowlist, because
+   it is the machine an operator naturally permits when thinking about Komodo. A port that is
+   closed to the whole internet but open to the manager would be reported as OPEN, and — worse —
+   a port genuinely open to the world would look the same, so the result cannot be interpreted.
+   We hit this for real while verifying a firewall change to periphery's `:8120`: from the manager
+   the port answered on a brand-new connection, and there was no way to tell whether it was
+   reachable from anywhere else.
+   This is the exact reasoning that put the manager's own cross-scan on an app host, not applied in
+   the reverse direction. The `public` perspective for an app host needs a source that is not the
+   manager: each app host scanning the OTHER app hosts' public IPs (which also tests the
+   host-to-host firewall posture, worth knowing on its own), or an outside vantage point. Whatever
+   is chosen, the source must be recorded in the metric — `secaudit_perimeter_port_open` already
+   carries `source_host`, and a result is meaningless without it. Starts
    verifying the external firewall's allowlist and the Headscale ACL.
 4. **[TODO] `tls`.** Brings `InternalTlsNotRenewing`, the second most valuable alert in the set.
 5. **[TODO] `web` (nuclei)** — the only one that touches the apps, hence last.

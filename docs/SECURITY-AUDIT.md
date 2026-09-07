@@ -3,10 +3,11 @@
 What runs, how to read it, what to do when it alerts. The design and the reasoning are in
 [plan/secaudit.md](plan/secaudit.md); this file is the operational half.
 
-**Phase 1 is what exists today.** The fast exposure sensor and the internal-name drift check. The
-native host bundle (lynis, docker-bench, trivy), the external nmap/testssl/nuclei scans and the
-cross-scan are phases 2-5 and are not built yet — `secaudit.sh run <that scan>` says so rather than
-silently doing nothing.
+**Phases 1 and 2 exist today.** The fast exposure sensor and the internal-name drift check
+(phase 1), plus the native host bundle — lynis, docker-bench-security, trivy, the socket table and
+the perimeter cross-scan — collected from each host through a zero-privilege courier (phase 2). The
+external nmap/testssl/nuclei scans run FROM the manager are phases 3-5 and are not built yet;
+`secaudit.sh run <that scan>` says so rather than silently doing nothing.
 
 ## Install
 
@@ -27,6 +28,45 @@ Everything else is already wired: `provisioning` mounts `./security` read-only a
 
 Without the timer, nothing is broken — it just means the scans only run when you run them, and
 `SecurityScanStale` will eventually fire and tell you so.
+
+## Enrolling a host (phase 2)
+
+The manager has no SSH to the app hosts, and nothing on them listens for it. Installation is
+carried by an operator; collection then goes over the Komodo link that already exists.
+
+```bash
+# on the manager: package the bundle and publish it as a one-time link
+scripts/secaudit.sh bundle --serve
+
+# on the host, as an operator with sudo — the URL is printed above
+sudo bash -c "$(curl -fsSL <url>)" -- --dry-run
+sudo bash -c "$(curl -fsSL <url>)" -- --no-enable
+sudo systemctl start secaudit-host.service     # ONE run, watched. 5-10 min
+/opt/secaudit/run.py --summary                 # read-only digest, no sudo
+sudo systemctl enable --now secaudit-host.timer secaudit-host.path
+```
+
+Exactly one host also runs the perimeter cross-scan, which is the only measurement of the external
+firewall allowlist and of the app-host → manager ACL deny:
+
+```bash
+sudo apt-get install -y nmap
+sudo bash -c "$(curl -fsSL <url>)" -- --perimeter-targets "manager_public=<PUBLIC_IP> manager_mesh=100.64.0.1"
+```
+
+Re-running the installer is idempotent and keeps the perimeter targets if you do not repeat them.
+Then, on the manager, create the couriers once and collect:
+
+```bash
+scripts/setup-secaudit.sh          # two Deployments per Komodo server; asserts no name collision
+scripts/secaudit.sh run collect
+sudo cp scripts/systemd/manager-security-collect.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now manager-security-collect.timer
+```
+
+**A host without the bundle is a deliberate state, not a fault.** `secaudit_host_enrolled` goes to
+0 and nothing else is emitted for it — no staleness, no alert. The fleet is enrolled one machine at
+a time on purpose, and paging about that decision is how an alert stream gets ignored.
 
 ## Day-to-day
 
@@ -89,6 +129,15 @@ fix goes in a suppression with a date and an owner.
 | `SecurityExporterDown` | VM cannot scrape the exporter | `docker compose logs provisioning`. Every security alert is blind meanwhile |
 | `SecurityStateUnreadable` | The exporter cannot parse a state or policy file | Named in `{{ $labels.file }}`. Missing data must never read as "no findings" |
 | `SecuritySuppressionInvalid` | A suppression suppresses nothing | Fix or delete the entry in `security/suppressions.toml` |
+| `SecurityHostReportStale` | A host stopped reporting for 36h | On the host: `systemctl status secaudit-host.timer`, then `systemctl start secaudit-host.service` |
+| `SecurityHostReportPartial` | The last run was killed before finishing | Usually `TimeoutStartSec` on a slow machine. `/opt/secaudit/run.py --summary` on the host says which step was reached |
+| `SecurityHostScannerFailing` | One scanner has failed for a day | A coverage gap in that tool only; the others still ran |
+| `TrivyDbStale` | The vulnerability DB is over 48h old | Silent false negatives: the dashboard goes green while new CVEs go unseen. Check the host's egress to ghcr.io |
+| `ImageCriticalVulnFixable` | Fixable CRITICAL CVEs in a **running** image | Rebuild or repull. Images that back no container are excluded on purpose — alerting on them is alerting on surface that does not exist |
+| `PendingVulnerablePackages` | Lynis found vulnerable OS packages | The auditor never runs apt; updating is your call |
+| `LynisFindingsRegression` / `DockerBenchRegression` | Hardening findings above the committed budget | Either something regressed, or `security/baseline/bench.toml` needs a **reviewed** increase — never a silent one |
+| `PerimeterUnexpectedPort` | A port is reachable that the baseline does not allow | `_mesh` target → Headscale ACL regression, fix `acl.hujson`. `_public` target → the external firewall is letting something through |
+| `PerimeterScanStale` | The cross-scan has not run in 48h | The firewall allowlist and the ACL deny are unverified meanwhile |
 | `SecurityFindingsTruncated` | A metric family hit the per-family series cap | Almost always a degenerate scan. Investigate before raising `_SEC_MAX_SERIES` |
 
 Security alerts are routed by the `scope="secaudit"` child route in

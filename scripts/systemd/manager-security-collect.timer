@@ -1,0 +1,14 @@
+[Unit]
+Description=Collect host audit reports daily
+
+[Timer]
+# The host bundles run at 01:00 UTC with up to 30 min of jitter, so collect after they have
+# finished. The retry catches a host that was slow or briefly unreachable; collecting more often
+# than the hosts produce adds nothing and multiplies Komodo Update records.
+OnCalendar=*-*-* 02:15:00 UTC
+OnCalendar=*-*-* 03:45:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -13,3 +13,7 @@ docker/homepage/logs/
 # accepted risk should be a reviewable diff.
 security/state/*
 !security/state/.gitkeep
+
+# Per-run archive of host audit reports (gzipped NDJSON, pruned by SECAUDIT_RETENTION_DAYS).
+# Regenerated on every collection, and an inventory of our own weaknesses.
+var/secaudit/

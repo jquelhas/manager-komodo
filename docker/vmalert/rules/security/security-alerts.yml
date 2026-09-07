@@ -181,3 +181,142 @@ groups:
         annotations:
           summary: "Suppression for {{ $labels.kind }}/{{ $labels.key }} expires in under 7 days"
           description: "Owner {{ $labels.owner }} ({{ $labels.ticket }}) accepted this finding until now. Renew it deliberately or fix the underlying issue — it is about to start alerting again."
+
+  - name: secaudit_hosts
+    interval: 15m
+    rules:
+      # NOT enrolled is never an alert. The fleet is enrolled one machine at a time on purpose, and
+      # paging about a decision somebody made deliberately is how an alert stream gets filtered
+      # into a folder nobody reads. It is a dashboard fact (secaudit_host_enrolled), nothing more.
+      - alert: SecurityHostReportStale
+        expr: secaudit_report_age_seconds > 129600
+        for: 1h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: audit report is over 36h old"
+          description: "The host bundle stopped reporting. On the host: systemctl status secaudit-host.timer, then systemctl start secaudit-host.service. A stale report is NOT a clean one."
+
+      - alert: SecurityHostReportPartial
+        expr: secaudit_report_partial == 1
+        for: 6h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: last audit run was cut short"
+          description: "The run was killed before finishing, so the findings are incomplete. Usually the unit's TimeoutStartSec on a slow machine. Check `/opt/secaudit/run.py --summary` on the host."
+
+      - alert: SecurityHostScannerFailing
+        expr: secaudit_host_step_error == 1
+        for: 24h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: the {{ $labels.tool }} step is failing"
+          description: "One scanner has failed for a day. The other steps still ran, so this is a coverage gap in {{ $labels.tool }} only."
+
+      - alert: TrivyDbStale
+        expr: secaudit_trivy_db_age_seconds > 172800
+        for: 6h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: trivy vulnerability database is over 48h old"
+          description: "A stale database means silent false negatives — the dashboard goes green while new CVEs go unseen. Check the host's egress to ghcr.io."
+
+  - name: secaudit_findings
+    interval: 15m
+    rules:
+      # Fixable is the whole point: alerting on total CVE counts means alerting forever on distro
+      # CVEs upstream has no fix for, which is a permanently red stream nobody reads.
+      # PER HOST, AGAINST A BUDGET — not per image, and not > 0.
+      #
+      # Corrected 2026-09-07, after the first fleet-wide collection produced 40 simultaneous
+      # alerts. A `sum by (host, image) ... > 0` rule fires once for every image carrying a single
+      # fixable CRITICAL, and every third-party base image carries some, continuously. That is the
+      # "alert on the absolute count" mistake this file warns about three times for lynis and
+      # docker-bench, applied to CVEs by the same author who wrote the warnings.
+      #
+      # Fixable CVEs in running images are a patch-cadence problem, so they get the same ratchet as
+      # hardening: one number per host, measured against a budget committed to git. The per-image
+      # breakdown lives on the dashboard, where a table is the right shape for it.
+      - alert: ImageCriticalVulnsOverBudget
+        expr: secaudit_image_vulns_over_budget{severity="CRITICAL"} > 0
+        for: 12h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: {{ $value }} fixable CRITICAL CVEs above budget"
+          description: "Running images on this host carry more fixable CRITICAL CVEs than security/baseline/bench.toml accepts. Rebuild or repull the images the dashboard lists as worst. Raising the budget is a reviewed decision, never a silent one."
+
+      - alert: ImageHighVulnsOverBudget
+        expr: secaudit_image_vulns_over_budget{severity="HIGH"} > 0
+        for: 24h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: {{ $value }} fixable HIGH CVEs above budget"
+          description: "Same ratchet as CRITICAL, with a longer fuse. A jump usually means a pinned tag has moved and the running copy is now well behind."
+
+      - alert: PendingVulnerablePackages
+        expr: secaudit_packages_vulnerable > 0
+        for: 24h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: {{ $value }} vulnerable OS package(s)"
+          description: "Lynis found packages with known vulnerabilities and a pending update. The auditor never runs apt itself — this is a deliberate operator action."
+
+      # Budgets, not absolutes: both scanners report dozens of things nobody will fix on a VPS.
+      # What matters is the number going UP, which means something regressed.
+      - alert: LynisFindingsRegression
+        expr: secaudit_lynis_findings_over_budget > 0
+        for: 12h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: lynis {{ $labels.severity }}s above the committed budget"
+          description: "More findings than security/baseline/bench.toml accepts for this host. Either something regressed, or the budget needs a reviewed increase — never a silent one."
+
+      - alert: DockerBenchRegression
+        expr: secaudit_bench_failures_over_budget > 0
+        for: 12h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: CIS Docker Benchmark failures above budget"
+          description: "Same ratchet as lynis: the budget in security/baseline/bench.toml is what was reviewed and accepted."
+
+  - name: secaudit_perimeter_scan
+    interval: 15m
+    rules:
+      # This is the only measurement of the external firewall allowlist. It runs FROM an app host,
+      # because a self-scan never leaves the machine and would prove nothing.
+      - alert: PerimeterUnexpectedPort
+        expr: secaudit_perimeter_port_open{expected="0"} == 1
+        for: 30m
+        labels:
+          severity: critical
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.target }} ({{ $labels.ip }}): {{ $labels.proto }}/{{ $labels.port }} reachable and not in the baseline"
+          description: "Seen from {{ $labels.source_host }}. If target ends in _mesh this is a Headscale ACL regression — fix acl.hujson, never widen the baseline. If it ends in _public the external firewall is letting through something it should not."
+
+      - alert: PerimeterScanStale
+        expr: time() - secaudit_perimeter_scan_timestamp_seconds > 172800
+        for: 2h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "Perimeter cross-scan has not run in 48h"
+          description: "The external firewall allowlist and the app-host -> manager ACL deny are unverified while this is stale. Check secaudit-host.timer on {{ $labels.source_host }}."

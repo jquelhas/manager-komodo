@@ -1,0 +1,60 @@
+# Per-section budgets for the host-hardening scanners. Read by the exporter AT SCRAPE TIME.
+#
+# WHY BUDGETS AND NOT ZERO. Lynis and docker-bench both report dozens of things that nobody will
+# ever act on for this fleet: auditd rule sets, per-container AppArmor profiles, user namespace
+# remapping, GRUB passwords on a VPS with no console. Alerting on the absolute count would mean a
+# permanently red security stream, and a stream that is always red is worth less than none — it
+# trains you to filter the folder that also carries InternalTlsNotRenewing.
+#
+# So the alert fires on REGRESSION: findings above the budget committed here. The budget is the
+# count observed when the machine was last reviewed and accepted. Raising a budget is an explicit,
+# reviewable diff that says "we looked at this and accepted it"; the number going up on its own is
+# what pages you.
+#
+# Workflow for a new machine:
+#   1. install and run once
+#   2. scripts/secaudit.sh baseline-init      -> prints the observed counts
+#   3. review them, paste them here, commit
+# Anything with no entry falls back to [defaults], which is deliberately generous: a new host must
+# not page on day one, before anyone has looked at it.
+schema = 1
+
+# Fallback for any (host, section) with no explicit entry below.
+[defaults]
+lynis_warning = 5
+lynis_suggestion = 60
+bench = 60
+# Fixable CVEs in RUNNING images. Deliberately generous by default: a newly enrolled host must not
+# page before anyone has looked at it, and third-party base images always carry some. What matters
+# is the number going UP.
+image_critical_fixable = 200
+image_high_fixable = 1500
+
+# ---------------------------------------------------------------------------------------------
+# Observed and accepted on 2026-09-06. These are starting points, not targets: the intent is that
+# they ratchet DOWN as findings get fixed, and any increase is a regression.
+#   manager        lynis index 68, 1 warning, 41 suggestions, docker-bench 33 failures of 117
+#   segcore-demo   lynis index 65, 2 warnings, 40 suggestions, docker-bench 33 failures of 117
+# ---------------------------------------------------------------------------------------------
+[hosts.manager]
+lynis_warning = 2
+lynis_suggestion = 45
+bench = 35
+# Observed 2026-09-07: 85 fixable CRITICAL across 29 images, several of them images no container
+# runs (mongo:8.0 is left over from before the FerretDB move). Accepted as the starting point;
+# the intent is that this ratchets DOWN as images are rebuilt and unused ones pruned.
+# Ratcheted down 2026-09-07 once a report with in_use landed: 51 CRITICAL and 1217 HIGH fixable in
+# images that actually back a running container. The earlier figures (85 / 1907) counted 13 images
+# nothing runs — mongo:8.0 from before the FerretDB move, two stale traefik tags, several duplicate
+# :latest copies. `docker image prune` would remove them from the machine entirely.
+# Budgets sit just above observed on purpose: a generous budget is a number nobody ever hears about.
+image_critical_fixable = 55
+image_high_fixable = 1250
+
+[hosts."segcore-demo"]
+lynis_warning = 3
+lynis_suggestion = 45
+bench = 35
+# Observed 2026-09-07: 11 fixable CRITICAL, 291 fixable HIGH across 12 images.
+image_critical_fixable = 20
+image_high_fixable = 350
