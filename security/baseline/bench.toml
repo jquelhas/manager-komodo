@@ -17,6 +17,10 @@
 #   3. review them, paste them here, commit
 # Anything with no entry falls back to [defaults], which is deliberately generous: a new host must
 # not page on day one, before anyone has looked at it.
+# NOTE: image CVE budgets used to live here. They moved to the application's CI on 2026-09-08
+# (docs/CI-IMAGE-SCANNING.md) — the fix is a repository change, so the gate belongs at the build.
+# What the fleet checks now is image AGE, and its threshold is in the alert rule rather than here,
+# because it is one number for the whole fleet rather than a per-host accepted count.
 schema = 1
 
 # Fallback for any (host, section) with no explicit entry below.
@@ -24,11 +28,6 @@ schema = 1
 lynis_warning = 5
 lynis_suggestion = 60
 bench = 60
-# Fixable CVEs in RUNNING images. Deliberately generous by default: a newly enrolled host must not
-# page before anyone has looked at it, and third-party base images always carry some. What matters
-# is the number going UP.
-image_critical_fixable = 200
-image_high_fixable = 1500
 
 # ---------------------------------------------------------------------------------------------
 # Observed and accepted on 2026-09-06. These are starting points, not targets: the intent is that
@@ -40,24 +39,8 @@ image_high_fixable = 1500
 lynis_warning = 2
 lynis_suggestion = 45
 bench = 35
-# Observed 2026-09-07: 85 fixable CRITICAL across 29 images, several of them images no container
-# runs (mongo:8.0 is left over from before the FerretDB move). Accepted as the starting point;
-# the intent is that this ratchets DOWN as images are rebuilt and unused ones pruned.
-# Ratcheted down 2026-09-07 once a report with in_use landed: 51 CRITICAL and 1217 HIGH fixable in
-# images that actually back a running container. The earlier figures (85 / 1907) counted 13 images
-# nothing runs — mongo:8.0 from before the FerretDB move, two stale traefik tags, several duplicate
-# :latest copies. `docker image prune` would remove them from the machine entirely.
-# Budgets sit just above observed on purpose: a generous budget is a number nobody ever hears about.
-image_critical_fixable = 55
-image_high_fixable = 1250
 
 [hosts."segcore-demo"]
 lynis_warning = 3
 lynis_suggestion = 45
 bench = 35
-# Ratcheted 2026-09-07 after the Traefik/Postgres update and once in_use landed: 7 CRITICAL and
-# 171 HIGH fixable in images that actually run. The pre-update figures were 11 and 291, and the
-# raw totals still read higher because the superseded images (postgres:18-alpine, traefik:v3.6.13)
-# remain on disk — they are simply no longer counted, which is what in_use is for.
-image_critical_fixable = 10
-image_high_fixable = 200

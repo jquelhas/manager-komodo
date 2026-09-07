@@ -4,13 +4,13 @@
 Runs as root from secaudit-host.service and writes ONE NDJSON file to
 $SECAUDIT_STATE/report.ndjson. Everything here is read-only auditing: it inspects, it never
 installs, reconfigures, restarts or removes anything. The only paths it writes are
-$SECAUDIT_STATE, $SECAUDIT_CACHE and $SECAUDIT_LOG, and the systemd unit enforces that with
+$SECAUDIT_STATE and $SECAUDIT_LOG, and the systemd unit enforces that with
 ProtectSystem=strict + ReadWritePaths — so this is a kernel guarantee, not a promise from a script.
 
 THIS FILE RUNS AS ROOT. It is the most review-sensitive file in the repo. It therefore:
   - reads nothing from outside $SECAUDIT_ROOT,
-  - takes no network parameters (the only outbound traffic is trivy's vulnerability DB and, on the
-    designated host, an nmap of addresses fixed in the unit's environment),
+  - takes no network parameters (the only outbound traffic is, on the designated host, an nmap of
+    addresses fixed in the unit's environment),
   - never runs `apt-get update`/`upgrade` — refreshing the package index is a state change and an
     operator's decision, never a side effect of an audit. The pending-vulnerable-package count
     comes from the apt metadata already on disk.
@@ -25,8 +25,8 @@ part is missing.
 RUN IT THROUGH SYSTEMD, NOT DIRECTLY:  systemctl start secaudit-host.service
 The unit carries the cgroup caps (MemoryMax=1G) and the filesystem containment. Running
 `./run.py` by hand bypasses both. That is not hypothetical: on 2026-09-06 a manual run on the
-3.8 GB manager OOM-killed VictoriaMetrics and took the host down. The trivy step now enforces its
-own floor and ceiling so the damage is bounded either way, but the unit is still the way in.
+3.8 GB manager OOM-killed VictoriaMetrics and took the host down. The step that made that possible
+(image CVE scanning) has since moved to the application's CI, but the unit is still the way in.
 """
 import collections
 import json
@@ -40,29 +40,11 @@ import time
 
 ROOT = os.environ.get("SECAUDIT_ROOT", "/opt/secaudit")
 STATE = os.environ.get("SECAUDIT_STATE", "/var/lib/secaudit")
-CACHE = os.environ.get("SECAUDIT_CACHE", "/var/cache/secaudit")
 LOGDIR = os.environ.get("SECAUDIT_LOG", "/var/log/secaudit")
 TRIGGER = os.path.join(STATE, "trigger.d", "run")
 
 # Caps. Detail lines are for the archive on the manager; the metrics only ever use the summaries,
 # so truncating detail costs nothing that alerts depend on — and it is reported when it happens.
-MAX_IMAGES = int(os.environ.get("SECAUDIT_MAX_IMAGES", "40"))
-MAX_VULN_LINES = int(os.environ.get("SECAUDIT_MAX_VULN_LINES", "600"))
-TRIVY_SEVERITY = os.environ.get("SECAUDIT_TRIVY_SEVERITY", "HIGH,CRITICAL")
-# Memory floor and ceiling for the trivy step. The floor stops it starting on a machine that is
-# already tight; the ceiling stops it growing into one.
-TRIVY_MIN_FREE_MB = int(os.environ.get("SECAUDIT_TRIVY_MIN_FREE_MB", "1024"))
-TRIVY_MEM_LIMIT_MB = int(os.environ.get("SECAUDIT_TRIVY_MEM_LIMIT_MB", "512"))
-# Java handling: "skip" (default) or "full".
-#   skip  Java archives are excluded from analysis, so trivy never needs its Java index DB — a
-#         ~1 GB download per host. Cost: NO Java/JAR vulnerabilities are reported. That gap is
-#         published as a metric (secaudit_trivy_java_skipped) rather than left silent, because an
-#         unreported gap in a vulnerability scanner is worse than a known one.
-#   full  Correct but expensive: trivy downloads the Java index DB the first time it meets a JAR.
-# Not a theoretical choice: ankane/pghero on the manager bundles JARs, and with the Java DB absent
-# trivy does not degrade — it FAILS the whole image scan.
-TRIVY_JAVA = os.environ.get("SECAUDIT_TRIVY_JAVA", "skip").strip().lower()
-_JAVA_GLOBS = "**/*.jar,**/*.war,**/*.ear,**/*.par"
 # Addresses to scan from here, "name=ip" separated by spaces. Set only on the designated
 # cross-scan host; empty everywhere else.
 PERIMETER_TARGETS = os.environ.get("SECAUDIT_PERIMETER_TARGETS", "").strip()
@@ -70,7 +52,7 @@ PERIMETER_PORTS = os.environ.get(
     "SECAUDIT_PERIMETER_PORTS", "1-1024,3000,5432,8120,8428,8880,9093,9120,9187,60022")
 PERIMETER_MAX_RATE = os.environ.get("SECAUDIT_PERIMETER_MAX_RATE", "100")
 
-TIMEOUTS = {"listeners": 60, "lynis": 900, "bench": 600, "trivy": 1800, "perimeter": 900}
+TIMEOUTS = {"listeners": 60, "lynis": 900, "bench": 600, "perimeter": 900}
 # Comma-separated subset of steps to run; empty means all. Exists for staged rollout: the first
 # run on a new machine should prove the cheap steps before the expensive one is let loose on it.
 STEPS = [x.strip() for x in os.environ.get("SECAUDIT_STEPS", "").split(",") if x.strip()]
@@ -291,178 +273,6 @@ def step_bench():
 
 
 # --------------------------------------------------------------------------------------------
-# 4. Trivy — CVEs in the images ALREADY on this host. No registry pull: that is the whole reason
-# this runs here instead of centrally, and it is also the only way to see host-built images
-# (gimsv2-backend:latest, segcore-site:current) which exist in no registry.
-#
-# The DB is refreshed once per run and then every scan uses --skip-db-update, so an upstream
-# rotation mid-run cannot make the results inconsistent. Never --skip-db-update WITHOUT a refresh
-# path: a stale DB produces silent false negatives, the worst failure a vulnerability scanner has,
-# because the dashboard goes green. Hence secaudit_trivy_db_age_seconds and its alert.
-# --------------------------------------------------------------------------------------------
-def _trivy_db_age():
-    meta = os.path.join(CACHE, "trivy", "db", "metadata.json")
-    try:
-        with open(meta, "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-        for key in ("UpdatedAt", "DownloadedAt"):
-            v = doc.get(key)
-            if v:
-                t = time.strptime(str(v)[:19], "%Y-%m-%dT%H:%M:%S")
-                import calendar
-                return max(0, int(time.time() - calendar.timegm(t)))
-    except (OSError, ValueError, KeyError):
-        pass
-    try:
-        return max(0, int(time.time() - os.stat(meta).st_mtime))
-    except OSError:
-        return None
-
-
-def _available_mb():
-    """MemAvailable in MiB, or None if it cannot be read."""
-    try:
-        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) // 1024
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
-
-
-def step_trivy():
-    trivy = os.path.join(ROOT, "bin", "trivy")
-    if not os.path.exists(trivy):
-        return tool_error("trivy", "not installed")
-
-    # Trivy is by far the heaviest step, and on a small control plane it is the one that can hurt
-    # the machine it is auditing. On 2026-09-06 an unbounded manual run of this script OOM-killed
-    # VictoriaMetrics on the 3.8 GB manager and took the host down with it. The systemd unit caps
-    # it (MemoryMax=1G), but a script must not depend on how it was invoked for that: these two
-    # guards make the cap intrinsic.
-    avail = _available_mb()
-    if avail is not None and avail < TRIVY_MIN_FREE_MB:
-        return tool_error("trivy", f"skipped: only {avail}MiB available, need {TRIVY_MIN_FREE_MB}MiB "
-                                   f"(set SECAUDIT_TRIVY_MIN_FREE_MB to override)")
-    # GOMEMLIMIT is the right lever for a Go binary: it makes the GC work harder as it approaches
-    # the ceiling instead of growing the heap. RLIMIT_AS would be wrong here — the Go runtime
-    # reserves large virtual address ranges and would die spuriously.
-    tenv = dict(os.environ, GOMEMLIMIT=f"{TRIVY_MEM_LIMIT_MB}MiB", GOGC="50")
-
-    cachedir = os.path.join(CACHE, "trivy")
-    os.makedirs(cachedir, exist_ok=True)
-    base = [trivy, "image", "--cache-dir", cachedir, "--scanners", "vuln",
-            "--quiet", "--parallel", "1"]
-    if TRIVY_JAVA != "full":
-        base += ["--skip-java-db-update", "--skip-files", _JAVA_GLOBS]
-    emit(k="trivy_policy", java=("full" if TRIVY_JAVA == "full" else "skipped"))
-
-    rc, _o, err = run(base + ["--download-db-only"], 900, env=tenv)
-    if rc != 0:
-        tool_error("trivy-db", err or f"rc={rc}")   # non-fatal: an older DB still finds most CVEs
-    age = _trivy_db_age()
-    if age is not None:
-        emit(k="trivy_db", age_seconds=age)
-
-    # Which images actually back a running container. Without this distinction an image nobody
-    # runs — mongo:8.0 is still on the manager from before the move to FerretDB, with 272 fixable
-    # CVEs — would alert forever about surface that does not exist. It is still scanned and still
-    # reported; it is just not the same finding as a CVE in something serving traffic.
-    in_use = set()
-    rc, out, _e = run(["docker", "ps", "--format", "{{.Image}}"], 60)
-    if rc == 0:
-        in_use = {x.strip() for x in out.splitlines() if x.strip()}
-
-    rc, out, err = run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}",
-                        "--filter", "dangling=false"], 60)
-    if rc != 0:
-        return tool_error("docker", err or f"rc={rc}")
-    images = []
-    seen = set()
-    for line in out.splitlines():
-        ref, _, iid = line.partition("\t")
-        if not ref or ref.endswith(":<none>") or ref.startswith("<none>") or ref in seen:
-            continue
-        seen.add(ref)
-        images.append((ref, iid))
-    images.sort()
-    images.sort(key=lambda t: t[0] not in in_use)   # running images first; the budget cuts the rest
-    all_images = list(images)
-    # ROTATE the starting point between runs. Sorting alone is deterministic, which sounds good
-    # until a step budget cuts the list at the same place every night: the tail of the alphabet
-    # would then never be scanned, permanently and silently. A persisted cursor guarantees every
-    # image is reached within a few runs, and the ones missed this time are reported below so the
-    # coverage gap is visible rather than assumed away.
-    cursor_file = os.path.join(STATE, "trivy-cursor")
-    start = 0
-    if images:
-        try:
-            with open(cursor_file, "r", encoding="utf-8") as fh:
-                start = int(fh.read().strip()) % len(images)
-        except (OSError, ValueError):
-            start = 0
-    images = images[start:] + images[:start]
-    if len(images) > MAX_IMAGES:
-        _truncated.append("images")
-        images = images[:MAX_IMAGES]
-
-    vuln_lines = 0
-    g_done = []
-    step_start = time.time()
-    for ref, iid in images:
-        # Budget the STEP, not just each image. On the manager, 26 images throttled at MemoryHigh
-        # took longer than the unit's whole timeout, and being SIGTERMed mid-scan is a worse
-        # outcome than scanning fewer images and saying so.
-        if time.time() - step_start > TIMEOUTS["trivy"]:
-            if "images_time" not in _truncated:
-                _truncated.append("images_time")
-            emit(k="tool_error", tool="trivy",
-                 msg=f"step budget of {TIMEOUTS['trivy']}s reached; {len(images) - len(g_done)} "
-                     f"image(s) not scanned")
-            break
-        g_done.append(ref)
-        rc, out, err = run(base + ["--skip-db-update", "--severity", TRIVY_SEVERITY,
-                                   "--format", "json", ref], 600, env=tenv)
-        if rc != 0:
-            emit(k="image", image=ref, id=iid, ok=False)
-            tool_error("trivy", f"{ref}: {(err or '')[:200]}")
-            continue
-        try:
-            doc = json.loads(out or "{}")
-        except ValueError as e:
-            emit(k="image", image=ref, id=iid, ok=False)
-            tool_error("trivy", f"{ref}: unparseable json ({e})")
-            continue
-        counts = {}
-        for result in doc.get("Results") or []:
-            for v in result.get("Vulnerabilities") or []:
-                sev = str(v.get("Severity", "UNKNOWN")).upper()
-                fixed = bool(v.get("FixedVersion"))
-                counts[(sev, fixed)] = counts.get((sev, fixed), 0) + 1
-                if vuln_lines < MAX_VULN_LINES:
-                    emit(k="vuln", image=ref, id=str(v.get("VulnerabilityID", "")),
-                         pkg=str(v.get("PkgName", "")), sev=sev,
-                         inst=str(v.get("InstalledVersion", ""))[:40],
-                         fix=str(v.get("FixedVersion", ""))[:40])
-                    vuln_lines += 1
-                elif "vulns" not in _truncated:
-                    _truncated.append("vulns")
-        emit(k="image", image=ref, id=iid, ok=True, in_use=ref in in_use,
-             counts=[{"sev": s, "fixable": f, "n": n} for (s, f), n in sorted(counts.items())])
-    for ref, _iid in images:
-        if ref not in g_done:
-            emit(k="image_skipped", image=ref)      # visible coverage gap, not a silent one
-    try:
-        with open(cursor_file, "w", encoding="utf-8") as fh:
-            fh.write(str((start + len(g_done)) % max(1, len(all_images))))
-        os.chmod(cursor_file, 0o600)
-    except OSError:
-        pass
-    emit(k="step_ok", step="trivy", n=len(g_done), planned=len(images))
-
-
-# --------------------------------------------------------------------------------------------
 # 5. Perimeter cross-scan. Only on the designated host, and only against addresses fixed in the
 # unit's environment. -sT (connect) needs no raw-socket capability and is the more faithful answer
 # to "is this reachable from outside" anyway. The mesh target is expected to find NOTHING: the
@@ -563,20 +373,6 @@ def summarise():
         print(f"  docker-bench score {bm[0].get('score')}, {len(of('bench'))} failures "
               f"of {bm[0].get('checks')} checks")
 
-    imgs = of("image")
-    if imgs:
-        ok = [i for i in imgs if i.get("ok")]
-        cr = sum(c["n"] for i in ok for c in (i.get("counts") or [])
-                 if c["sev"] == "CRITICAL" and c["fixable"])
-        hi = sum(c["n"] for i in ok for c in (i.get("counts") or [])
-                 if c["sev"] == "HIGH" and c["fixable"])
-        print(f"  trivy      {len(ok)}/{len(imgs)} images scanned, {len(of('image_skipped'))} left "
-              f"for the next run | fixable: {cr} CRITICAL, {hi} HIGH")
-        worst = sorted(ok, key=lambda i: -sum(c["n"] for c in (i.get("counts") or []) if c["fixable"]))
-        for i in worst[:3]:
-            n = sum(c["n"] for c in (i.get("counts") or []) if c["fixable"])
-            if n:
-                print(f"      {i['image'][:52]:54} {n} fixable")
 
     scans = of("scan_ok")
     if scans:
@@ -631,7 +427,7 @@ def main():
               "  systemctl start secaudit-host.service\n"
               "Override only if you know why: run.py --force-unmanaged", file=sys.stderr)
         return 2
-    for d in (STATE, CACHE, LOGDIR, os.path.join(STATE, "trigger.d")):
+    for d in (STATE, LOGDIR, os.path.join(STATE, "trigger.d")):
         os.makedirs(d, exist_ok=True)
     # Consume the on-demand trigger FIRST, so a run started by the .path unit cannot loop.
     try:
@@ -647,8 +443,7 @@ def main():
     emit(k="meta", runid=_runid, ts=int(_t0), host=os.uname().nodename, schema=1)
 
     for name, fn in (("listeners", step_listeners), ("lynis", step_lynis),
-                     ("bench", step_bench), ("trivy", step_trivy),
-                     ("perimeter", step_perimeter)):
+                     ("bench", step_bench), ("perimeter", step_perimeter)):
         if STEPS and name not in STEPS:
             emit(k="step_skipped", step=name)   # visible, so a partial run is never mistaken for
             continue                            # a clean one

@@ -4,8 +4,17 @@ What runs, how to read it, what to do when it alerts. The design and the reasoni
 [plan/secaudit.md](plan/secaudit.md); this file is the operational half.
 
 **Phases 1 and 2 exist today.** The fast exposure sensor and the internal-name drift check
-(phase 1), plus the native host bundle — lynis, docker-bench-security, trivy, the socket table and
-the perimeter cross-scan — collected from each host through a zero-privilege courier (phase 2). The
+(phase 1), plus the native host bundle — lynis, docker-bench-security, the socket table and the
+perimeter cross-scan — collected from each host through a zero-privilege courier (phase 2).
+
+**Image CVE scanning is deliberately NOT here.** It moved to the application's CI on 2026-09-08
+(see [CI-IMAGE-SCANNING.md](CI-IMAGE-SCANNING.md)): the fix is a base-image tag or a lockfile, both
+of which live in a repository, and alerting somebody who cannot act is how an alert stream gets
+ignored. The fleet answers the question CI structurally cannot — is what is *running* what we think
+we shipped — through `secaudit_running_image_age_seconds`, built from metadata Komodo already
+reports. That removed the heaviest and most failure-prone part of the bundle: ~27% of `run.py`,
+1.3 GB of vulnerability database per host, and with them the memory floor and ceiling, the step
+budget, the rotation cursor and the Java-database trap. The
 external nmap/testssl/nuclei scans run FROM the manager are phases 3-5 and are not built yet;
 `secaudit.sh run <that scan>` says so rather than silently doing nothing.
 
@@ -132,8 +141,7 @@ fix goes in a suppression with a date and an owner.
 | `SecurityHostReportStale` | A host stopped reporting for 36h | On the host: `systemctl status secaudit-host.timer`, then `systemctl start secaudit-host.service` |
 | `SecurityHostReportPartial` | The last run was killed before finishing | Usually `TimeoutStartSec` on a slow machine. `/opt/secaudit/run.py --summary` on the host says which step was reached |
 | `SecurityHostScannerFailing` | One scanner has failed for a day | A coverage gap in that tool only; the others still ran |
-| `TrivyDbStale` | The vulnerability DB is over 48h old | Silent false negatives: the dashboard goes green while new CVEs go unseen. Check the host's egress to ghcr.io |
-| `ImageCriticalVulnFixable` | Fixable CRITICAL CVEs in a **running** image | Rebuild or repull. Images that back no container are excluded on purpose — alerting on them is alerting on surface that does not exist |
+| `RunningImageStale` | An image backing a running container has not been rebuilt in 180 days | Repull the tag and redeploy. If the version is pinned on purpose, record it in `security/suppressions.toml` with a date and an owner. Digest-pinned references are excluded automatically |
 | `PendingVulnerablePackages` | Lynis found vulnerable OS packages | The auditor never runs apt; updating is your call |
 | `LynisFindingsRegression` / `DockerBenchRegression` | Hardening findings above the committed budget | Either something regressed, or `security/baseline/bench.toml` needs a **reviewed** increase — never a silent one |
 | `PerimeterUnexpectedPort` | A port is reachable that the baseline does not allow | `_mesh` target → Headscale ACL regression, fix `acl.hujson`. `_public` target → the external firewall is letting something through |

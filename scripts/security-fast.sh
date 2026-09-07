@@ -127,7 +127,71 @@ jq -n --argjson ts "$(date +%s)" --argjson h "$hosts_json" \
   '{schema:1, ts:$ts, hosts:$h}' | sec_state_write docker-ports.json
 sec_scan_end "$ok_all" "$ports_total"
 
-# ---- 3. internal-service checklist drift ------------------------------------------------------
+# ---- 4. image freshness across the fleet ------------------------------------------------------
+# The counterpart to CI scanning, not a replacement for it. CI knows whether the image it just
+# built was vulnerable; only the host knows what is actually running, and for how long. An image
+# built months ago has stopped receiving base-layer patches — whether that is a deliberate pin or a
+# deploy that quietly never happened, both are worth seeing.
+#
+# Komodo's read/ListImages already reports `created` and computes `in_use` itself, so this costs
+# one API call per host and needs nothing installed anywhere.
+sec_scan_begin images manager
+imgs_json='{}'
+img_total=0
+img_ok=1
+
+# The manager's own daemon, locally.
+mgr_imgs="$(docker images --format '{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' --filter dangling=false 2>/dev/null \
+  | python3 -c '
+import json, sys, time, datetime
+running = set()
+out = []
+for line in sys.stdin:
+    ref, _, created = line.rstrip("\n").partition("|")
+    if not ref or ref.endswith(":<none>"):
+        continue
+    try:
+        # docker prints "2026-09-07 18:51:22 +0000 UTC"
+        ts = int(datetime.datetime.strptime(created[:19], "%Y-%m-%d %H:%M:%S")
+                 .replace(tzinfo=datetime.timezone.utc).timestamp())
+    except ValueError:
+        continue
+    out.append({"name": ref, "created": ts})
+print(json.dumps(out))')"
+mgr_running="$(docker ps --format '{{.Image}}' 2>/dev/null | python3 -c '
+import json, sys
+def norm(r):
+    r = r.strip()
+    if not r or "@" in r: return r
+    return r if ":" in r.rsplit("/", 1)[-1] else r + ":latest"
+print(json.dumps(sorted({norm(l) for l in sys.stdin if l.strip()})))')"
+mgr="$(jq -nc --argjson i "${mgr_imgs:-[]}" --argjson r "${mgr_running:-[]}" \
+  '{ok:true, images:[ $i[] | . + {in_use: (.name as $n | $r | index($n) != null)} ]}')"
+imgs_json="$(jq -c --argjson m "$mgr" '. + {manager: $m}' <<<"$imgs_json")"
+img_total=$(( img_total + $(jq '[.images[]|select(.in_use)]|length' <<<"$mgr") ))
+
+while IFS=$'\t' read -r host scannable; do
+  [ -n "$host" ] || continue
+  [ "$scannable" = "1" ] || continue
+  li="$(kapi read/ListImages "$(jq -nc --arg s "$host" '{server:$s}')" 2>/dev/null || true)"
+  if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"${li:-null}"; then
+    sec_warn "ListImages failed for $host"
+    img_ok=0
+    imgs_json="$(jq -c --arg h "$host" '. + {($h): {ok:false, images:[]}}' <<<"$imgs_json")"
+    continue
+  fi
+  hi="$(jq -c '[ .[] | select((.name // "") != "" and (.name | endswith(":<none>") | not))
+                | {name, created, in_use: (.in_use // false)} ]' <<<"$li")"
+  imgs_json="$(jq -c --arg h "$host" --argjson i "$hi" '. + {($h): {ok:true, images:$i}}' <<<"$imgs_json")"
+  img_total=$(( img_total + $(jq '[.[]|select(.in_use)]|length' <<<"$hi") ))
+done < <(jq -r '.targets[] | select(.host != "manager") | [.host, (.scannable|tostring)] | @tsv' \
+            "$(sec_state_path targets.json)" 2>/dev/null || true)
+
+jq -n --argjson ts "$(date +%s)" --argjson h "$imgs_json" '{schema:1, ts:$ts, hosts:$h}' \
+  | sec_state_write images.json
+sec_scan_end "$img_ok" "$img_total"
+
+# ---- 5. internal-service checklist drift ------------------------------------------------------
 # Homepage is deliberately NOT checked: a missing tile is cosmetic and never broke anything, while
 # several legitimate names (step-ca, the tailscale alias, Homepage itself) have no href by design —
 # checking it would produce four permanent false positives and train us to ignore the alert.

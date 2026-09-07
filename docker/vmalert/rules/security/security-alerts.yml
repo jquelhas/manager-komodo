@@ -218,51 +218,29 @@ groups:
           summary: "{{ $labels.host }}: the {{ $labels.tool }} step is failing"
           description: "One scanner has failed for a day. The other steps still ran, so this is a coverage gap in {{ $labels.tool }} only."
 
-      - alert: TrivyDbStale
-        expr: secaudit_trivy_db_age_seconds > 172800
-        for: 6h
-        labels:
-          severity: warning
-          scope: secaudit
-        annotations:
-          summary: "{{ $labels.host }}: trivy vulnerability database is over 48h old"
-          description: "A stale database means silent false negatives — the dashboard goes green while new CVEs go unseen. Check the host's egress to ghcr.io."
 
   - name: secaudit_findings
     interval: 15m
     rules:
       # Fixable is the whole point: alerting on total CVE counts means alerting forever on distro
       # CVEs upstream has no fix for, which is a permanently red stream nobody reads.
-      # PER HOST, AGAINST A BUDGET — not per image, and not > 0.
+      # Image CVEs are NOT alerted here any more. They moved to the application's CI on
+      # 2026-09-08 (docs/CI-IMAGE-SCANNING.md): the fix is a base-image tag or a lockfile, both of
+      # which live in a repository, and alerting somebody who cannot act is how an alert stream
+      # ends up filtered into a folder nobody reads.
       #
-      # Corrected 2026-09-07, after the first fleet-wide collection produced 40 simultaneous
-      # alerts. A `sum by (host, image) ... > 0` rule fires once for every image carrying a single
-      # fixable CRITICAL, and every third-party base image carries some, continuously. That is the
-      # "alert on the absolute count" mistake this file warns about three times for lynis and
-      # docker-bench, applied to CVEs by the same author who wrote the warnings.
-      #
-      # Fixable CVEs in running images are a patch-cadence problem, so they get the same ratchet as
-      # hardening: one number per host, measured against a budget committed to git. The per-image
-      # breakdown lives on the dashboard, where a table is the right shape for it.
-      - alert: ImageCriticalVulnsOverBudget
-        expr: secaudit_image_vulns_over_budget{severity="CRITICAL"} > 0
-        for: 12h
-        labels:
-          severity: warning
-          scope: secaudit
-        annotations:
-          summary: "{{ $labels.host }}: {{ $value }} fixable CRITICAL CVEs above budget"
-          description: "Running images on this host carry more fixable CRITICAL CVEs than security/baseline/bench.toml accepts. Rebuild or repull the images the dashboard lists as worst. Raising the budget is a reviewed decision, never a silent one."
-
-      - alert: ImageHighVulnsOverBudget
-        expr: secaudit_image_vulns_over_budget{severity="HIGH"} > 0
+      # What the fleet alerts on instead is the question CI cannot answer: is the thing actually
+      # RUNNING the thing we think we shipped? An image built long ago has stopped receiving
+      # base-layer patches — a pin nobody refreshed, or a deploy that quietly never happened.
+      - alert: RunningImageStale
+        expr: secaudit_running_image_age_seconds{suppressed="0"} > 180 * 86400
         for: 24h
         labels:
           severity: warning
           scope: secaudit
         annotations:
-          summary: "{{ $labels.host }}: {{ $value }} fixable HIGH CVEs above budget"
-          description: "Same ratchet as CRITICAL, with a longer fuse. A jump usually means a pinned tag has moved and the running copy is now well behind."
+          summary: "{{ $labels.host }}: {{ $labels.image }} was built {{ $value | humanizeDuration }} ago"
+          description: "This image backs a running container and has not been rebuilt or repulled in over 180 days, so it has missed every base-layer patch since. Repull the tag and redeploy, or — if the version is pinned deliberately — record that in security/suppressions.toml with a date and an owner. Digest-pinned references are excluded automatically: they cannot be refreshed without changing the pin."
 
       - alert: PendingVulnerablePackages
         expr: secaudit_packages_vulnerable > 0

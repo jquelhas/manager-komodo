@@ -1154,66 +1154,6 @@
     },
     {
       "type": "stat",
-      "title": "CVEs CRITICAL corrigíveis (em uso)",
-      "description": "Só imagens que suportam um container a correr, e só CVEs com correção publicada a montante. Imagens paradas são contadas à parte: alertar sobre elas seria alertar sobre superfície que não existe.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 8,
-        "y": 49
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(secaudit_image_vulns{severity=\"CRITICAL\",fixable=\"1\",in_use=\"1\",suppressed=\"0\"}) or vector(0)",
-          "legendFormat": "",
-          "refId": "A",
-          "instant": true
-        }
-      ]
-    },
-    {
-      "type": "stat",
       "title": "Pacotes de SO vulneráveis",
       "description": "Do lynis. O auditor nunca corre apt — actualizar é decisão do operador.",
       "datasource": {
@@ -1547,64 +1487,6 @@
     },
     {
       "type": "table",
-      "title": "CVEs corrigíveis por imagem",
-      "description": "Contagens, nunca uma série por CVE — isso poria dezenas de milhares de séries no TSDB para dados que nenhum alerta consegue accionar. O detalhe por CVE está em var/secaudit/ no manager.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 13,
-        "x": 0,
-        "y": 59
-      },
-      "options": {
-        "showHeader": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "filterable": true
-          }
-        },
-        "overrides": []
-      },
-      "transformations": [
-        {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "fixable": true,
-              "suppressed": true
-            }
-          }
-        }
-      ],
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "secaudit_image_vulns{fixable=\"1\",suppressed=\"0\"}",
-          "legendFormat": "",
-          "refId": "A",
-          "instant": true,
-          "format": "table"
-        }
-      ]
-    },
-    {
-      "type": "table",
       "title": "Hardening: achados acima do budget",
       "description": "O ratchet. Ambos os scanners reportam dezenas de coisas que ninguém vai corrigir num VPS, por isso o alerta é sobre REGRESSÃO acima do budget commitado em security/baseline/bench.toml — nunca sobre a contagem absoluta.",
       "datasource": {
@@ -1691,6 +1573,114 @@
           "refId": "C",
           "instant": true,
           "format": "table"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Idade das imagens em produção",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Vem dos metadados que o Komodo já reporta — sem scanner, sem base de dados, sem nada instalado. Referências fixadas por digest são excluídas: não podem ser refrescadas sem mudar o pin.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "idade"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 7776000
+                    },
+                    {
+                      "color": "red",
+                      "value": 15552000
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "suppressed": true
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_running_image_age_seconds",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
         }
       ]
     }

@@ -12,9 +12,9 @@
 #   ./install-secaudit.sh --uninstall
 #
 # What it installs:
-#   /opt/secaudit/{lynis,docker-bench,bin/trivy,run.py,versions.env}
+#   /opt/secaudit/{lynis,docker-bench,run.py,versions.env}
 #   /etc/systemd/system/secaudit-host.{service,timer,path}
-#   /var/lib/secaudit  (report.ndjson + trigger.d)   /var/cache/secaudit   /var/log/secaudit
+#   /var/lib/secaudit  (report.ndjson + trigger.d)   /var/log/secaudit
 #
 # What it does NOT do: it never runs apt-get update/upgrade, never touches sshd or any other
 # service, and never starts an audit by itself. After installing, run one audit by hand and watch
@@ -60,6 +60,8 @@ if [ "$UNINSTALL" = 1 ]; then
   done
   run rm -f "$UNIT_DIR"/secaudit-host.{service,timer,path}
   run systemctl daemon-reload
+  # $CACHE is still removed even though nothing creates it any more: installs from before
+  # 2026-09-08 left a ~1.3 GB trivy database behind, and uninstall must be complete.
   run rm -rf "$PREFIX" "$STATE" "$CACHE" "$LOGDIR"
   info "removed. Nothing else on this host was ever modified."
   exit 0
@@ -80,13 +82,12 @@ esac
 for bin in curl tar sha256sum python3 systemctl ss; do
   command -v "$bin" >/dev/null || die "missing required command: $bin"
 done
-command -v docker >/dev/null || warn "docker not found — the trivy and docker-bench steps will report tool_error"
+command -v docker >/dev/null || warn "docker not found — the docker-bench step will report tool_error"
 
 # shellcheck disable=SC1090
 . "$BUNDLE/versions.env"
 : "${SECAUDIT_LYNIS_URL:?}" "${SECAUDIT_LYNIS_SHA256:?}" "${SECAUDIT_LYNIS_VERSION:?}"
 : "${SECAUDIT_BENCH_URL:?}" "${SECAUDIT_BENCH_SHA256:?}" "${SECAUDIT_BENCH_VERSION:?}"
-: "${SECAUDIT_TRIVY_URL:?}" "${SECAUDIT_TRIVY_SHA256:?}" "${SECAUDIT_TRIVY_VERSION:?}"
 
 # The unit is rewritten from scratch on every run, so an option not repeated would be silently
 # dropped. For the perimeter targets that would quietly disable the cross-scan — the only check
@@ -122,17 +123,17 @@ fetch() {
 
 # Skip work that is already done: the marker records exactly which pinned set is installed.
 MARKER="$PREFIX/.installed"
-WANT_MARK="lynis=$SECAUDIT_LYNIS_SHA256 bench=$SECAUDIT_BENCH_SHA256 trivy=$SECAUDIT_TRIVY_SHA256"
+WANT_MARK="lynis=$SECAUDIT_LYNIS_SHA256 bench=$SECAUDIT_BENCH_SHA256"
 HAVE_MARK="$(cat "$MARKER" 2>/dev/null || true)"
 
 info "installing secaudit bundle into $PREFIX"
-run mkdir -p "$PREFIX/bin" "$STATE/trigger.d" "$CACHE" "$LOGDIR"
+run mkdir -p "$STATE/trigger.d" "$LOGDIR"
 # 0751 on the prefix: traversable but not listable. `run.py --summary` is a read-only view of a
 # world-readable report, so needing sudo just to reach the script was a wart — but nobody should be
 # able to enumerate what is installed here either. The cache and the log dir stay 0750: lynis
 # writes a detailed inventory of the machine into its log, which is genuinely sensitive.
 run chmod 0751 "$PREFIX"
-run chmod 0750 "$CACHE" "$LOGDIR"
+run chmod 0750 "$LOGDIR"
 run chmod 0755 "$STATE"          # the collect courier bind-mounts this read-only
 run chmod 0733 "$STATE/trigger.d"  # write-only for the trigger courier: it drops a sentinel, it
                                    # can never read or replace report.ndjson
@@ -143,7 +144,6 @@ else
   WORK="$(mktemp -d)"
   fetch "$SECAUDIT_LYNIS_URL" "$SECAUDIT_LYNIS_SHA256" "$WORK/lynis.tgz"
   fetch "$SECAUDIT_BENCH_URL" "$SECAUDIT_BENCH_SHA256" "$WORK/bench.tgz"
-  fetch "$SECAUDIT_TRIVY_URL" "$SECAUDIT_TRIVY_SHA256" "$WORK/trivy.tgz"
 
   info "  unpacking (replacing any previous copy)"
   if [ "$DRY" = 0 ]; then
@@ -153,12 +153,10 @@ else
     # version, so stripping it keeps the install path stable across upgrades.
     tar xzf "$WORK/lynis.tgz" -C "$PREFIX/lynis" --strip-components=1
     tar xzf "$WORK/bench.tgz" -C "$PREFIX/docker-bench" --strip-components=1
-    tar xzf "$WORK/trivy.tgz" -C "$WORK" trivy
-    install -m 0755 "$WORK/trivy" "$PREFIX/bin/trivy"
     chmod 0755 "$PREFIX/lynis/lynis" "$PREFIX/docker-bench/docker-bench-security.sh"
     echo "$WANT_MARK" > "$MARKER"; chmod 0600 "$MARKER"
   else
-    echo "    would: unpack lynis, docker-bench and trivy into $PREFIX"
+    echo "    would: unpack lynis and docker-bench into $PREFIX"
   fi
 fi
 
@@ -181,7 +179,7 @@ write_unit() {  # $1 = filename, stdin = content
 
 write_unit secaudit-host.service <<UNIT
 [Unit]
-Description=secaudit host audit (listeners, lynis, docker-bench, trivy)
+Description=secaudit host audit (listeners, lynis, docker-bench)
 Documentation=https://github.com/jquelhas/manager-komodo/blob/main/docs/plan/secaudit.md
 After=docker.service
 Wants=docker.service
@@ -198,21 +196,22 @@ ExecStart=$PREFIX/run.py
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="SECAUDIT_ROOT=$PREFIX"
 Environment="SECAUDIT_STATE=$STATE"
-Environment="SECAUDIT_CACHE=$CACHE"
 Environment="SECAUDIT_LOG=$LOGDIR"
 Environment="SECAUDIT_PERIMETER_TARGETS=$PERIMETER"
 # Containment enforced by the kernel, not promised by the script: everything is read-only except
 # the three secaudit paths. /run/docker.sock is listed because connect() on a unix socket needs
 # write access to the inode, which ProtectSystem=strict would otherwise deny.
 ProtectSystem=strict
-ReadWritePaths=$STATE $CACHE $LOGDIR /run/docker.sock
+ReadWritePaths=$STATE $LOGDIR /run/docker.sock
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 RestrictSUIDSGID=yes
-# Bound the auditor so that IT fails rather than anything else on the box. A trivy OOM shows up as
-# a tool_error and a stale-scan alert, never as pressure on the application.
+# Bound the auditor so that IT fails rather than anything else on the box: an OOM here shows up as
+# a tool_error and a stale-scan alert, never as pressure on the application. The heaviest step
+# (image CVE scanning) has moved to CI, so these limits now have a lot of headroom — keep them
+# anyway, because the whole point is that the auditor can never be the thing that hurts the host.
 MemoryMax=1G
 MemoryHigh=768M
 CPUQuota=100%
@@ -267,7 +266,7 @@ fi
 
 cat <<EOM
 
-${c_grn}Installed.${c_rst} Versions: lynis $SECAUDIT_LYNIS_VERSION, docker-bench $SECAUDIT_BENCH_VERSION, trivy $SECAUDIT_TRIVY_VERSION
+${c_grn}Installed.${c_rst} Versions: lynis $SECAUDIT_LYNIS_VERSION, docker-bench $SECAUDIT_BENCH_VERSION
 
 Next, run ONE audit by hand and watch it before trusting the timer (it takes 5-10 minutes; lynis
 alone is around 2). ALWAYS through systemd, never ./run.py directly — the unit carries the memory

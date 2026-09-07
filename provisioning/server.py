@@ -494,7 +494,9 @@ _SCAN_BUDGETS = {
     "collect": 129600, "ports": 129600, "tls": 129600,                      # daily -> 36h
     "web": 1036800,                                                         # weekly -> 12d
 }
-_SUPPRESSION_KINDS = ("port", "tls", "nuclei", "trivy", "bench", "lynis")
+# "image" covers a deliberately pinned old image: a frozen version kept for compatibility is a
+# decision, and it should be suppressible with a date and an owner like any other.
+_SUPPRESSION_KINDS = ("port", "tls", "nuclei", "image", "bench", "lynis")
 
 
 def _sec_load(rel):
@@ -699,13 +701,15 @@ _SECURITY_FAMILIES = [
     ("secaudit_bench_failures_over_budget", "gauge", "Failures above the committed budget"),
     ("secaudit_bench_score", "gauge", "docker-bench-security score (trend only)"),
     # Image CVEs. Counts only — per-CVE detail lives in the on-disk archive, never in the TSDB.
-    ("secaudit_image_vulns", "gauge", "Vulnerabilities per image, by severity and fixability"),
-    ("secaudit_image_vulns_over_budget", "gauge",
-     "Fixable CVEs in running images above the host's committed budget"),
-    ("secaudit_images_scanned", "gauge", "Images scanned in the host's last run"),
-    ("secaudit_images_pending", "gauge", "Images the budget deferred to a later run"),
-    ("secaudit_trivy_db_age_seconds", "gauge", "Age of the trivy vulnerability database"),
-    ("secaudit_trivy_java_skipped", "gauge", "1 if Java archives are excluded from analysis"),
+    # Image CVE scanning moved to the application's CI on 2026-09-08 (docs/CI-IMAGE-SCANNING.md):
+    # the fix lives in a repository, not on a host, and alerting where nobody can act is how an
+    # alert stream gets ignored. What the fleet still answers is the question CI cannot — is what
+    # is RUNNING what we think we shipped — and image age is the cheap proxy for it. A running
+    # image built months ago has stopped receiving base-layer patches, whether that is a stale pin
+    # or a deploy that quietly never happened.
+    ("secaudit_running_image_age_seconds", "gauge",
+     "Age of an image backing a running container, from Komodo's own metadata"),
+    ("secaudit_running_images", "gauge", "Images backing at least one running container"),
     # Perimeter cross-scan, measured FROM a host
     ("secaudit_perimeter_port_open", "gauge", "A port found open by the cross-scan"),
     ("secaudit_perimeter_scan_timestamp_seconds", "gauge", "When the cross-scan last ran"),
@@ -924,50 +928,6 @@ def security_metrics_text():
         for r in rec("bench_meta"):
             add("secaudit_bench_score", lbl(host=host), r.get("score", 0))
 
-        # --- image CVEs. COUNTS only: a series per CVE would put tens of thousands of series in a
-        # 60-day TSDB for data no alert can act on. The detail is in var/secaudit/.
-        scanned = 0
-        for r in rec("image"):
-            if not r.get("ok"):
-                continue
-            scanned += 1
-            image = r.get("image", "")
-            sup, _e = _sec_suppressed(valid_sup, used_sup, "trivy", host, image)
-            sl = "1" if sup else "0"
-            for c in r.get("counts") or []:
-                add("secaudit_image_vulns",
-                    lbl(host=host, image=image, severity=c.get("sev", ""),
-                        fixable="1" if c.get("fixable") else "0",
-                        # A report written before in_use existed has no such key. Treat unknown
-                        # as IN USE: assuming otherwise would silently stop the alerts during the
-                        # rollout, which is the failure mode this whole system exists to avoid.
-                        in_use="0" if r.get("in_use") is False else "1", suppressed=sl),
-                    c.get("n", 0))
-        # The ratchet, per host: total fixable CVEs in RUNNING images against a committed budget.
-        # Per-image counts stay as series for the dashboard, but they are not what alerts — every
-        # third-party base image carries a fixable CRITICAL or two, continuously, and alerting on
-        # each one produced 40 simultaneous alerts the first time the whole fleet reported.
-        for sev in ("CRITICAL", "HIGH"):
-            total = 0
-            for r in rec("image"):
-                if not r.get("ok") or r.get("in_use") is False:
-                    continue
-                if _sec_suppressed(valid_sup, used_sup, "trivy", host, r.get("image", ""))[0]:
-                    continue
-                for c in r.get("counts") or []:
-                    if c.get("sev") == sev and c.get("fixable"):
-                        total += c.get("n", 0)
-            budget = sec_budget(budgets, host, f"image_{sev.lower()}_fixable")
-            add("secaudit_image_vulns_over_budget",
-                lbl(host=host, severity=sev), max(0, total - budget))
-        add("secaudit_images_scanned", lbl(host=host), scanned)
-        add("secaudit_images_pending", lbl(host=host), len(rec("image_skipped")))
-        for r in rec("trivy_db"):
-            add("secaudit_trivy_db_age_seconds", lbl(host=host), r.get("age_seconds", 0))
-        for r in rec("trivy_policy"):
-            add("secaudit_trivy_java_skipped", lbl(host=host),
-                0 if r.get("java") == "full" else 1)
-
         # --- perimeter cross-scan, run FROM this host against the manager ---
         for r in rec("scan_ok"):
             add("secaudit_perimeter_scan_timestamp_seconds",
@@ -1015,6 +975,35 @@ def security_metrics_text():
                 add("secaudit_port_missing",
                     lbl(host=host, perspective="local", proto="tcp", port=port,
                         suppressed="1" if sup else "0"), 1)
+
+    # ---- image freshness across the fleet -----------------------------------------------------
+    # Not a vulnerability scan: that moved to the application's CI, where the fix lives. This is the
+    # question CI structurally cannot answer — is what is RUNNING what we think we shipped? An
+    # image built long ago has stopped receiving base-layer patches, whether because the tag was
+    # pinned and never refreshed or because a deploy quietly never happened.
+    images = _sec_load("state/images.json")
+    if images is None:
+        errors.append("state/images.json")
+    else:
+        now = time.time()
+        for host, hd in (images.get("hosts") or {}).items():
+            if not hd.get("ok"):
+                continue
+            used = [i for i in (hd.get("images") or []) if i.get("in_use")]
+            add("secaudit_running_images", lbl(host=host), len(used))
+            for img in used:
+                created = img.get("created")
+                if not created:
+                    continue
+                name = img.get("name", "")
+                # A digest-pinned reference is immutable by design and can never be "refreshed"
+                # without changing the pin, so ageing it would alert forever on a deliberate choice.
+                if "@sha256:" in name:
+                    continue
+                sup, _e = _sec_suppressed(valid_sup, used_sup, "image", host, name)
+                add("secaudit_running_image_age_seconds",
+                    lbl(host=host, image=name, suppressed="1" if sup else "0"),
+                    max(0, int(now - created)))
 
     # ---- internal-service checklist drift -----------------------------------------------------
     drift = _sec_load("state/drift.json")
