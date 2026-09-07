@@ -85,7 +85,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   traefik:
-    image: traefik:v3.7.7                    # última estável (2026-07-08)
+    image: traefik:v3.7.12                   # última estável (2026-08-26)
     container_name: manager-traefik
     restart: unless-stopped
     depends_on:
@@ -107,7 +107,7 @@ services:
   # Headscale — coordenador WireGuard. Único serviço público (via router `control` no
   # entrypoint público). CLI via `docker exec manager-headscale headscale ...`.
   headscale:
-    image: headscale/headscale:v0.29.2       # última estável (2026-07-01)
+    image: headscale/headscale:v0.29.3       # última estável (2026-07-29)
     container_name: manager-headscale
     restart: unless-stopped
     command: serve
@@ -129,7 +129,7 @@ services:
   # headplane.apps.internal / tailscale.apps.internal (step-ca cert). Docker integration OFF (see
   # docker/headplane/config.yaml). Node ops via the Headscale HTTP API using HEADPLANE_API_KEY.
   headplane:
-    image: ghcr.io/tale/headplane:0.7.0      # última estável (2026-07-04)
+    image: ghcr.io/tale/headplane:0.7.1      # última estável (2026-08-28)
     container_name: manager-headplane
     restart: unless-stopped
     depends_on: [headscale]
