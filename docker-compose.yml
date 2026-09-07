@@ -311,7 +311,7 @@ services:
   # Alertmanager — single notification hub (SMTP). Receives app alerts from vmalert and infra
   # alerts from Komodo (via the provisioning /alert/komodo relay). UI at alertmanager.apps.internal.
   alertmanager:
-    image: prom/alertmanager:v0.28.1               # latest stable (2025)
+    image: prom/alertmanager:v0.34.0               # latest stable (2026-08-16)
     container_name: manager-alertmanager
     restart: unless-stopped
     depends_on:
