@@ -55,6 +55,9 @@ image_high_fixable = 1250
 lynis_warning = 3
 lynis_suggestion = 45
 bench = 35
-# Observed 2026-09-07: 11 fixable CRITICAL, 291 fixable HIGH across 12 images.
-image_critical_fixable = 20
-image_high_fixable = 350
+# Ratcheted 2026-09-07 after the Traefik/Postgres update and once in_use landed: 7 CRITICAL and
+# 171 HIGH fixable in images that actually run. The pre-update figures were 11 and 291, and the
+# raw totals still read higher because the superseded images (postgres:18-alpine, traefik:v3.6.13)
+# remain on disk — they are simply no longer counted, which is what in_use is for.
+image_critical_fixable = 10
+image_high_fixable = 200

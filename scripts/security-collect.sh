@@ -77,6 +77,21 @@ while IFS=$'\t' read -r host scannable; do
   out="$(jq -r '.stdout // ""' <<<"${log:-{\}}" 2>/dev/null || echo "")"
   err="$(jq -r '.stderr // ""' <<<"${log:-{\}}" 2>/dev/null || echo "")"
 
+  # Keep only the LAST complete report in the log, and never assume the log holds exactly one.
+  # `execute/Deploy` recreates the container and so starts a fresh log, but StartDeployment — the
+  # "Start" button in the Komodo UI, which is the one an operator actually sees on an exited
+  # one-shot — reuses the container and APPENDS. Two clicks put two concatenated reports in the
+  # log; storing both would double every finding count and pair the oldest `meta` with the newest
+  # `end`. Slice from the last meta line instead.
+  out="$(printf '%s' "$out" | python3 -c '
+import sys
+lines = [l for l in sys.stdin.read().splitlines() if l.strip()]
+start = 0
+for i, l in enumerate(lines):
+    if l.lstrip().startswith("{\"k\":\"meta\""):
+        start = i
+print("\n".join(lines[start:]))
+' 2>/dev/null || printf '%s' "$out")"
   if [ "$code" = "0" ] && [ -n "$out" ] && jq -e . >/dev/null 2>&1 <<<"$(head -n1 <<<"$out")"; then
     lines="$(grep -c . <<<"$out" || echo 0)"
     printf '%s\n' "$out" | grep . | sec_state_write "hosts/${host}.ndjson"

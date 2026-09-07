@@ -268,6 +268,11 @@ EOM
     # audit. The container has no network, no capabilities, no docker.sock, and cannot read or
     # replace the report it is asking to be regenerated. The worst an abuse of this path achieves
     # is requesting an audit.
+    # This is the only command here that talks to Komodo directly; every other path delegates to a
+    # security-*.sh, each of which loads the credentials itself. Without this the API call goes out
+    # unauthenticated and returns 401 — which never showed in testing, because an interactive shell
+    # that had already sourced the lib exported the keys to every child process.
+    sec_load_env
     host="${sub:-}"
     [ -n "$host" ] || sec_die "which host? scripts/secaudit.sh audit <host>   (see: secaudit.sh status)"
     [ "$host" != "manager" ] || sec_die "the manager audits itself locally: sudo systemctl start secaudit-host.service"

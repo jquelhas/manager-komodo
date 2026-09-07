@@ -73,6 +73,46 @@ assert_no_collision() {   # $1 = server name, $2 = deployment name
   fi
 }
 
+# One `secaudit` tag on all four couriers, so the UI can filter them as a group and they are not
+# scattered among the application's own deployments. Deliberately NOT the `segcore` tag: a
+# tag-based BatchDeploy or BatchPullRepo over `segcore` would then sweep the auditors up with the
+# app, which is how a routine fleet operation ends up triggering audits on every host at once.
+ensure_tag() {
+  local id
+  id="$(kapi read/ListTags '{}' 2>/dev/null | jq -r '.[]? | select(.name=="secaudit") | .id // ._id["$oid"]' | head -1)"
+  if [ -z "$id" ]; then
+    kapi write/CreateTag '{"name":"secaudit"}' >/dev/null 2>&1 || true
+    id="$(kapi read/ListTags '{}' 2>/dev/null | jq -r '.[]? | select(.name=="secaudit") | .id // ._id["$oid"]' | head -1)"
+  fi
+  [ -n "$id" ] || { sec_warn "could not resolve the secaudit tag (cosmetic; carrying on)"; return 0; }
+  printf '%s' "$id"
+}
+TAG_ID="$(ensure_tag)"
+
+tag_it() {   # $1 = deployment name
+  [ -n "$TAG_ID" ] || return 0
+  kapi write/UpdateResourceMeta \
+    "$(jq -nc --arg n "$1" --arg t "$TAG_ID" '{target:{type:"Deployment", id:$n}, tags:[$t]}')" \
+    >/dev/null 2>&1 || sec_warn "  could not tag $1 (cosmetic; carrying on)"
+}
+
+# Description and tag, set through the API so the UI explains itself. This is the whole "put the
+# on-demand audit in the Komodo UI" story: a Deployment already appears on its server's page, and
+# clicking Deploy on the trigger IS the on-demand audit. What was missing was any indication of
+# that to somebody who did not build it. Operator-facing text is in Portuguese, matching the
+# Grafana dashboards; the code around it stays English.
+describe() {   # $1 = deployment name, $2 = description
+  kapi write/UpdateResourceMeta \
+    "$(jq -nc --arg n "$1" --arg d "$2" '{target:{type:"Deployment", id:$n}, description:$d}')" \
+    >/dev/null 2>&1 || sec_warn "  could not set the description on $1 (cosmetic; carrying on)"
+}
+
+# The UI shows START and REDEPLOY on an exited one-shot, never "Deploy" — say the real button
+# names. Both work for the trigger; Start is lighter because it reuses the container instead of
+# recreating it. Verified 2026-09-07.
+DESC_TRIGGER='AUDITORIA DE SEGURANCA A PEDIDO. Carregue em START (ou Redeploy) para auditar este host agora - leva 5-10 min: lynis, CIS Docker, CVEs das imagens e portas a escuta. NAO altera nada no host, so le. O resultado aparece no Grafana, pasta "security", depois de o manager o recolher (timer diario, ou ja: scripts/secaudit.sh audit <host>). Este container so faz um touch num ficheiro: sem rede, sem privilegios, sem docker.sock.'
+DESC_COLLECT='Le o ultimo relatorio de auditoria deste host e devolve-o ao manager pelo log. Nao precisa de o usar: o manager recolhe por timer. START ou Redeploy releem agora. So faz cat de um ficheiro montado read-only; sem rede e sem privilegios.'
+
 courier_config() {   # $1 = server_id, $2 = role (collect|trigger)
   local sid="$1" role="$2" vol cmd entry
   if [ "$role" = collect ]; then
@@ -154,6 +194,8 @@ while IFS=$'\t' read -r sid sname; do
       kapi write/CreateDeployment "$(jq -nc --arg n "$dname" --argjson c "$cfg" '{name:$n, config:$c}')" >/dev/null
     fi
     echo_check "$dname" "$cfg"
+    if [ "$role" = trigger ]; then describe "$dname" "$DESC_TRIGGER"; else describe "$dname" "$DESC_COLLECT"; fi
+    tag_it "$dname"
     n=$((n + 1))
   done
 done < <(jq -r '.[] | [(.id // ._id["$oid"] // ""), .name] | @tsv' <<<"$servers")
