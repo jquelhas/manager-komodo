@@ -6,7 +6,8 @@
 # Creates / updates:
 #   - Action    segcore-silence-on   <- docker/komodo/actions/segcore-silence-on.ts
 #   - Action    segcore-silence-off  <- docker/komodo/actions/segcore-silence-off.ts
-#   - Procedure deploy-segcore: [silence-on] -> [BatchPullRepo segcore-*] -> [silence-off]
+#   - Procedure deploy-segcore:
+#       [silence-on] -> [BatchPullRepo segcore-*] -> [BatchDeployStack segcore-*] -> [silence-off]
 #
 # After this, deploy the fleet by running the `deploy-segcore` Procedure (Komodo UI / webhook):
 # it silences the SEGCORE alerts for the rebuild window automatically, so no backend down/up
@@ -91,16 +92,39 @@ ensure_action() {
   fi
 }
 
+# A host is deployed either as a Repo (PullRepo runs on_pull) or as a Stack (DeployStack runs
+# pre_deploy) -- never both, because both run ./scripts/update.sh, which takes a database backup and
+# rebuilds every image. A host holding a Repo AND a Stack of the same name would therefore run the
+# full update twice, sequentially: two backups and roughly half an hour. The fleet is mid-migration
+# from Repos to Stacks (see the 2026-09-08 correction in docs/DESIGN.md), so this overlap is a real
+# transient state and not a hypothetical -- assert it instead of documenting it.
+overlap="$(comm -12 \
+  <(kapi read/ListRepos  '{}' | jq -r '.[].name' | sort) \
+  <(kapi read/ListStacks '{}' | jq -r '.[].name' | sort))"
+if [ -n "$overlap" ]; then
+  warn "these names exist as BOTH a Repo and a Stack:"
+  printf '      %s\n' $overlap
+  die "refusing to install the Procedure: it would run update.sh twice on each of them. Delete the
+    obsolete resource of the pair first (the Repo, if that host has already been migrated to a
+    Stack), then re-run. Its full config can be exported beforehand with read/ExportResourcesToToml."
+fi
+
 ensure_action segcore-silence-on  "$ACTION_ON"
 ensure_action segcore-silence-off "$ACTION_OFF"
 
-# Procedure: silence-on -> BatchPullRepo(segcore-*) -> silence-off. Stages run sequentially; each
-# stage waits for its execution to finish before the next starts.
+# Procedure: silence-on -> BatchPullRepo(segcore-*) -> BatchDeployStack(segcore-*) -> silence-off.
+# Stages run sequentially; each waits for its execution to finish before the next starts. Both
+# deploy stages carry the same pattern and each only ever matches its own resource type, so a host
+# is picked up by exactly one of them -- which the overlap guard above is what makes true. Keep the
+# wildcard rather than listing hostnames: the onboarding flow auto-creates a Repo for every new host
+# (provisioning/server.py, write/CreateRepo), and a hardcoded name would silently leave the next
+# host undeployed.
 PROC_CFG="$(jq -n '{
   stages: [
-    { name: "silence-on",  enabled: true, executions: [ { enabled: true, execution: { type: "RunAction",    params: { action: "segcore-silence-on" } } } ] },
-    { name: "pull",        enabled: true, executions: [ { enabled: true, execution: { type: "BatchPullRepo", params: { pattern: "segcore-*" } } } ] },
-    { name: "silence-off", enabled: true, executions: [ { enabled: true, execution: { type: "RunAction",    params: { action: "segcore-silence-off" } } } ] }
+    { name: "silence-on",      enabled: true, executions: [ { enabled: true, execution: { type: "RunAction",        params: { action: "segcore-silence-on" } } } ] },
+    { name: "pull (repos)",    enabled: true, executions: [ { enabled: true, execution: { type: "BatchPullRepo",    params: { pattern: "segcore-*" } } } ] },
+    { name: "deploy (stacks)", enabled: true, executions: [ { enabled: true, execution: { type: "BatchDeployStack", params: { pattern: "segcore-*" } } } ] },
+    { name: "silence-off",     enabled: true, executions: [ { enabled: true, execution: { type: "RunAction",        params: { action: "segcore-silence-off" } } } ] }
   ]
 }')"
 
