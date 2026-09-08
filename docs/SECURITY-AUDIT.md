@@ -88,7 +88,23 @@ scripts/secaudit.sh show listeners      # the manager's socket table
 scripts/secaudit.sh show drift          # internal-name checklist
 scripts/secaudit.sh show suppressions   # accepted risks and their expiry
 scripts/secaudit.sh metrics             # the exact exposition VM scrapes
+
+scripts/secaudit.sh audit <host>        # ask a host to audit itself NOW and wait for it
+scripts/secaudit.sh run collect         # harvest the reports the hosts have already written
+scripts/secaudit.sh show lynis <host>   # every OS finding, with its text
+scripts/secaudit.sh show bench <host>   # every failed CIS Docker check
 ```
+
+**Where the per-finding detail lives, and why it is not in Grafana.** The dashboard and the alerts
+carry *counts* — one series per `(host, section, severity)`. The individual findings are read back
+from the collected report on disk by the two `show` commands above. That split is deliberate: a
+series per lynis test per host is cardinality bought for nothing, since nobody alerts on
+"AUTH-9286 is present", only on "warnings went up".
+
+**A finding without its text is useless, and the parsing has one trap.** Most lynis suggestions
+carry their text in `desc` and leave `detail` as an **empty string**, not null — so `.detail //
+.desc` does not fall through and prints a page of blanks. `show lynis` handles it; hand-written
+`jq` against the NDJSON usually does not.
 
 ## The one thing to understand before trusting a green dashboard
 

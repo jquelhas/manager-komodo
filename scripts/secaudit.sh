@@ -5,6 +5,7 @@
 #   secaudit.sh run [all|discovery|fast|collect] [--dry-run]
 #   secaudit.sh status                      what ran, when, and whether it is stale
 #   secaudit.sh show ports|listeners|drift|suppressions
+#   secaudit.sh show lynis|bench <host>    per-finding detail, read back from the collected report
 #   secaudit.sh metrics                     the exact exposition VictoriaMetrics scrapes
 #   secaudit.sh audit <host>                ask a host to audit itself NOW, from here
 #   secaudit.sh bundle [--serve]            package the host bundle; --serve publishes it as a
@@ -142,7 +143,21 @@ PYSTATUS
       ports)     run_exporter | grep -E '^secaudit_port_(open|unexpected|missing)' || echo "no exposed ports recorded" ;;
       drift)     jq -r '"routers: \(.routers|length)", (.findings[]? | "MISSING \(.missing)\t\(.name)")' "$(sec_state_path drift.json)" ;;
       suppressions) run_exporter | grep -E '^secaudit_suppression' || echo "none" ;;
-      *) sec_die "show what? ports|listeners|drift|suppressions" ;;
+      # The per-finding detail deliberately lives in the collected NDJSON and never in the TSDB
+      # (one series per lynis test per host would be cardinality for nothing). These two read it
+      # back, so answering "what did it actually find" does not need a hand-written jq.
+      lynis|bench)
+        host="${3:-}"
+        [ -n "$host" ] || sec_die "usage: secaudit.sh show $sub <host>   (hosts: $(ls "$(sec_state_path hosts)" 2>/dev/null | sed 's/\.ndjson$//' | tr '\n' ' '))"
+        f="$(sec_state_path "hosts/$host.ndjson")"
+        [ -f "$f" ] || sec_die "no collected report for '$host' — run: secaudit.sh run collect"
+        # `detail` is an empty STRING (not null) on most lynis suggestions, so `//` does not fall
+        # through to `desc`. Getting this wrong prints a page of blank descriptions.
+        jq -r --arg k "$sub" 'select(.k==$k)
+              | .t = (if (.detail // "") == "" then (.desc // "") else .detail end)
+              | "\(.severity // "-")\t\(.section // "-")\t\(.test_id // .id // "-")\t\(.t)"' "$f" \
+          | sort -u | column -t -s$'\t' ;;
+      *) sec_die "show what? ports|listeners|drift|suppressions|lynis <host>|bench <host>" ;;
     esac
     ;;
 
@@ -164,9 +179,11 @@ PYSTATUS
     # host installs with a single curl instead of an scp. This deliberately does NOT use the mesh.
     #
     # The obvious idea is to serve it from 100.64.0.1 over the tailnet, but docker/headscale/
-    # acl.hujson has no `src: ["tag:segcore"]` rule at all: app hosts cannot reach the manager on
-    # any port, by design. That deny is the single control stopping a compromised app host — the
-    # public-facing, highest-risk machines in the fleet — from pivoting into the control plane,
+    # acl.hujson opens exactly ONE port from `tag:segcore` to the manager -- 443, for the
+    # maintenance-silence endpoint (added 2026-09-08) -- and nothing else. App hosts cannot reach
+    # a bundle server on any other port, by design. That deny is the control stopping a compromised
+    # app host — the public-facing, highest-risk machines in the fleet — from pivoting into the
+    # control plane,
     # which holds the Komodo API (deploy on every host), the step-ca root and every secret. This
     # auditor's own UnexpectedOpenPortMesh alert exists to detect exactly that rule appearing.
     # Opening it to deliver the auditor would be using the tool to undo what it measures.
