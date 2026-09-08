@@ -418,10 +418,34 @@ Só pela mesh, nunca pela internet: o `websecure-internal` do Traefik está publ
 `100.64.0.1:443` e mais nada, e o caminho **não** tem o prefixo `/provisioning`, que é o único que
 o entrypoint público encaminha. São duas razões independentes, de propósito.
 
-**Não há token.** A identidade vem do IP de mesh de origem — atribuído pelo Headscale e autenticado
-por WireGuard — validado contra `security/state/targets.json`. O endpoint não aceita matchers nem o
-campo `host` (responde 400 se vier), e tem tecto de 45 min no servidor. Um host comprometido
-silencia-se a si próprio durante 45 minutos e mais nada.
+**A identidade é um token por host, no caminho da URL.** O endpoint não aceita matchers nem o campo
+`host` (responde 400 se vier), tem tecto de 45 min no servidor, e o `host` silenciado é derivado do
+token. Um host comprometido silencia-se a si próprio durante 45 minutos e mais nada.
+
+> **Porque não é o IP de mesh, que dispensaria segredo nenhum.** Era o desenho original, e **não
+> funciona** — medido a 2026-09-08, não presumido: um pedido de um app host chega ao Traefik com
+> `X-Forwarded-For: 172.18.0.1`, a gateway da bridge Docker do manager, porque o *userland proxy* do
+> dockerd (`docker-proxy`, à escuta em `100.64.0.1:443`) termina a ligação e abre outra para o
+> container. **Todos os hosts ficam indistinguíveis** à camada de aplicação, logo uma verificação
+> por endereço não autentica ninguém. Isto vale para qualquer coisa no manager que queira o IP real
+> do cliente; corrigi-lo de raiz exigiria `userland-proxy: false` no `daemon.json` e reiniciar o
+> dockerd, o que reinicia todo o control plane — decisão separada, não feita.
+
+O token é `HMAC-SHA256(MAINTENANCE_HMAC_KEY, <host>)` truncado a 32 hex. O manager **não guarda
+tokens**: re-deriva e compara em tempo constante. Está no caminho da URL, e não num header, por uma
+razão prática — o `update.sh` da app constrói o pedido como `"${KOMODO_ALERT_SILENCE_URL}/start"`,
+logo o segredo viaja de graça e o script da aplicação não muda uma linha.
+
+É um **valor por host**, portanto vai no `environment` daquele host na UI do Komodo e nunca num
+`APPVAR_` (esses são fleet-wide, que é exactamente o que um segredo por host não pode ser):
+
+```bash
+scripts/setup-maintenance-tokens.sh              # imprime a URL de cada host
+scripts/setup-maintenance-tokens.sh --host segcore-demo
+```
+
+Rodar a `MAINTENANCE_HMAC_KEY` invalida todas as URLs de uma vez: re-correr o script e actualizar
+cada host.
 
 Requer duas coisas em cada host, ambas tratadas pelo `bootstrap/onboard-host.sh` num host novo:
 
@@ -432,9 +456,9 @@ Requer duas coisas em cada host, ambas tratadas pelo `bootstrap/onboard-host.sh`
   sudo curl -fsSL -o /usr/local/share/ca-certificates/manager-step-ca.crt \
        https://<PUBLIC_DOMAIN>/provisioning/step-ca-root.crt && sudo update-ca-certificates
   ```
-- **a variável no `.env`**, `KOMODO_ALERT_SILENCE_URL`, escrita pelo Komodo a partir da Variable com
-  o mesmo nome (`APPVAR_KOMODO_ALERT_SILENCE_URL` no `.env` do manager). Vazia ou ausente = função
-  desligada, e o `update.sh` salta o silence sem falhar.
+- **a variável no `.env`**, `KOMODO_ALERT_SILENCE_URL`, com a URL **daquele** host incluindo o
+  token, colada no `environment` dele na UI do Komodo. Vazia ou ausente = função desligada, e o
+  `update.sh` salta o silence sem falhar.
 
 Para desligar em incidente, sem tocar no router nem no código: `MAINTENANCE_API=off` no `.env` do
 manager + `docker compose up -d --force-recreate provisioning`. O endpoint passa a responder 503.

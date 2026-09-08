@@ -218,6 +218,7 @@ services:
       # in .env to make it 503 during an incident without touching the router or the code.
       MAINTENANCE_API: "${MAINTENANCE_API:-on}"
       MAINTENANCE_MAX_MINUTES: "${MAINTENANCE_MAX_MINUTES:-45}"
+      MAINTENANCE_HMAC_KEY: "${MAINTENANCE_HMAC_KEY:-}"
     volumes:
       - ./provisioning/server.py:/app/server.py:ro
       # Single-file bind mount: editing the template needs `up -d --force-recreate provisioning`.

@@ -213,9 +213,12 @@ WEBHOOK_ALERTAS_TOKEN=[[WEBHOOK_ALERTAS_TOKEN]]
 # ================================================================
 # Where scripts/update.sh asks the control plane to silence this host's alerts for the rebuild
 # window, so a PLANNED down does not e-mail backend down/up. Reached over the Tailscale mesh only
-# (apps.internal resolves to the manager's mesh IP); the host authenticates by being on the mesh,
-# so there is no token here and nothing to rotate.
+# (apps.internal resolves to the manager's mesh IP).
 #
-# EMPTY OR ABSENT = FEATURE OFF. update.sh must skip the silence and carry on, never fail: a host
+# LEFT EMPTY HERE ON PURPOSE, and it is not a Variable: the URL ends in a token that is DERIVED
+# PER HOST, so a fleet-wide value would hand every host the same credential. Print this host's URL
+# with scripts/setup-maintenance-tokens.sh --host <name> and paste it as a literal into that host's
+# `environment` in the Komodo UI, like every other per-host value.
+#
+# EMPTY OR ABSENT = FEATURE OFF. update.sh skips the silence and carries on, never fails: a host
 # has to stay updatable with no manager at all. Two POSTs, <url>/start and <url>/end.
-KOMODO_ALERT_SILENCE_URL=[[KOMODO_ALERT_SILENCE_URL]]

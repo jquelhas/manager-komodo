@@ -16,6 +16,8 @@ path would log the secret). Response bodies are never logged.
 """
 import datetime
 import fnmatch
+import hashlib
+import hmac
 import http.server
 import json
 import os
@@ -56,7 +58,22 @@ ALERT_RE = re.compile(r"^/alert/komodo$")  # internal only (Traefik routes /prov
 # entrypoint routes `PathPrefix(/provisioning)` and nothing else, so this cannot be reached from the
 # internet by construction rather than by configuration. The mesh route is a separate Traefik router
 # on websecure-internal (bound to 100.64.0.1 only) plus one narrow Headscale ACL rule.
-MAINTENANCE_RE = re.compile(r"^/maintenance/silence/(start|end)$")
+# The token in the path is the caller's identity. It is in the PATH and not in a header or the
+# body for one reason: the application's scripts/update.sh builds its request as
+# "${KOMODO_ALERT_SILENCE_URL}/start", so putting the secret inside that URL means the deploy
+# script needs no change at all -- and it is delivered per host through the same Komodo
+# per-host `environment` that already carries every other per-host value.
+MAINTENANCE_RE = re.compile(r"^/maintenance/silence/([A-Za-z0-9_-]{16,128})/(start|end)$")
+# One secret on the manager; each host's token is DERIVED from it and from the host's own name, so
+# there is no token database to keep and a host's token is useless for any other host.
+#
+# Why a token at all, when the mesh already authenticates the caller: because the source address
+# does not survive the trip. Measured 2026-09-08 -- a request from segcore-demo reaches Traefik
+# with X-Forwarded-For 172.18.0.1, the manager's Docker bridge gateway, because dockerd's userland
+# proxy (`docker-proxy`, listening on 100.64.0.1:443) terminates the connection and opens a fresh
+# one. Every host therefore looks identical at the application layer. Deriving identity from the
+# mesh IP was the original design and it silently authenticated nobody.
+MAINTENANCE_HMAC_KEY = os.environ.get("MAINTENANCE_HMAC_KEY", "").strip()
 # Kill switch: set MAINTENANCE_API=off in the manager .env to make the endpoint 503 without editing
 # code or pulling the Traefik router, for use during an incident.
 MAINTENANCE_API = os.environ.get("MAINTENANCE_API", "on").strip().lower() not in ("off", "0", "false")
@@ -443,40 +460,31 @@ def _trusted_proxy_ips():
         return ips or _PROXY_CACHE["ips"]
 
 
-def maintenance_client_ip(headers, peer):
-    """The address to attribute this request to, or None if it cannot be established.
-
-    X-Forwarded-For is only believed when the connection itself comes from the reverse proxy.
-    That check is the point: `provisioning` publishes no port, but a dozen other containers share
-    its compose network, and any one of them could otherwise POST here with a forged header and
-    silence a host's alerts. Requiring the peer to be Traefik reduces the set of things that can
-    reach this endpoint to "whatever Traefik routes", which is one mesh-only router.
-
-    Traefik APPENDS the connection's remote address to any X-Forwarded-For it received, so a client
-    that sends its own forged header arrives as [forged..., real]: the LAST element is the one
-    Traefik wrote, and the only one worth reading.
-    """
-    if peer not in _trusted_proxy_ips():
+def maintenance_token_for(host):
+    """This host's silence token. Also the generator: scripts/setup-maintenance-tokens.sh prints
+    the per-host URL to paste into that host's Komodo environment."""
+    if not MAINTENANCE_HMAC_KEY:
         return None
-    xff = (headers.get("X-Forwarded-For") or "").strip()
-    return xff.split(",")[-1].strip() if xff else None
+    return hmac.new(MAINTENANCE_HMAC_KEY.encode(), host.encode(), hashlib.sha256).hexdigest()[:32]
 
 
-def maintenance_host_for_ip(addr):
-    """Map a mesh IP to the app host it belongs to, or None.
+def maintenance_host_for_token(token):
+    """Map a token to the app host that owns it, or None.
 
-    The allowlist is security/state/targets.json, which the discovery scan already maintains and
-    which is mounted read-only -- so this endpoint cannot widen its own set of callers. Only hosts
-    with the app role qualify: the matchers below are app="segcore", so nothing else has anything
-    to silence.
+    The candidate set is security/state/targets.json, which the discovery scan already maintains
+    and which is mounted read-only, so this endpoint cannot widen its own set of callers. Only
+    hosts with the app role qualify: the matchers are app="segcore", so nothing else has anything
+    to silence. Comparison is constant-time.
     """
-    if not MESH_IP_RE.match(addr or ""):
+    if not MAINTENANCE_HMAC_KEY or not token:
         return None
     data = _sec_load("state/targets.json")
     for t in (data or {}).get("targets", []):
-        if t.get("role") == APP_TAG and t.get("mesh_ip") == addr:
-            host = str(t.get("host") or "").strip()
-            return host or None
+        if t.get("role") != APP_TAG:
+            continue
+        host = str(t.get("host") or "").strip()
+        if host and hmac.compare_digest(maintenance_token_for(host), token):
+            return host
     return None
 
 
@@ -1390,25 +1398,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if mm:
             if not MAINTENANCE_API:
                 return self._json(503, {"ok": False, "error": "maintenance api disabled"})
-            addr = maintenance_client_ip(self.headers, self.client_address[0])
-            host = maintenance_host_for_ip(addr)
+            if not MAINTENANCE_HMAC_KEY:
+                # Fail closed and say so in the log: an unconfigured key must never read as "allow".
+                self.log_error("maintenance silence: MAINTENANCE_HMAC_KEY is not set")
+                return self._json(503, {"ok": False, "error": "maintenance api not configured"})
+            # Kept as a second layer even though the token is what authenticates: a dozen other
+            # containers share this compose network, and this confines the endpoint to whatever
+            # Traefik routes, which is one mesh-only router.
+            if self.client_address[0] not in _trusted_proxy_ips():
+                self.log_error("maintenance silence refused: peer=%s is not the reverse proxy",
+                               self.client_address[0])
+                return self._json(403, {"ok": False, "error": "not routed through the proxy"})
+            host = maintenance_host_for_token(mm.group(1))
+            action = mm.group(2)
             if not host:
-                # Deliberately says nothing about which addresses would work.
-                self.log_error("maintenance silence refused for %s", addr)
-                return self._json(403, {"ok": False, "error": "caller is not a known app host"})
+                # The RESPONSE says nothing useful on purpose. The LOG must not print the token.
+                self.log_error("maintenance silence refused: unknown token (xff=%r)",
+                               self.headers.get("X-Forwarded-For"))
+                return self._json(403, {"ok": False, "error": "unknown caller"})
             data = self._json_body()
             if "host" in data:
                 # Rejected rather than ignored: silently dropping it would let somebody build a
                 # deploy script around the belief that one host can silence another.
                 return self._json(400, {"ok": False,
-                                        "error": "host is derived from the mesh address, not accepted"})
-            if mm.group(1) == "start":
+                                        "error": "host is derived from the token, not accepted"})
+            if action == "start":
                 st, payload = maintenance_silence_start(host, data.get("minutes", MAINTENANCE_MAX_MINUTES))
             else:
                 st, payload = maintenance_silence_end(host)
             if not payload.get("ok"):
-                self.log_error("maintenance silence/%s for %s: %s",
-                               mm.group(1), host, payload.get("error"))
+                self.log_error("maintenance silence/%s for %s: %s", action, host, payload.get("error"))
             return self._json(st, payload)
 
         # Komodo Custom alerter -> Alertmanager relay (internal only).
@@ -1481,9 +1500,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         redacted = re.sub(
             r"/provisioning/[^/]+/", "/provisioning/<uuid>/", self.path or ""
         )
+        # The maintenance token IS the credential and it travels in the path, so it must never be
+        # written down here -- the same reason the capability uuid above is redacted.
+        redacted = re.sub(
+            r"/maintenance/silence/[^/]+/", "/maintenance/silence/<token>/", redacted
+        )
+        # Two kinds of caller land here. log_request() passes the fixed access-log format, where
+        # the status code is args[1]; log_error() passes a real diagnostic message. Treating both
+        # as access lines dropped every diagnostic message on the floor -- a 403 from the
+        # maintenance endpoint recorded that it happened but never why, which is the one thing a
+        # refusal log is for.
+        if fmt.startswith('"%s"'):
+            detail = args[1] if len(args) > 1 else "-"
+        else:
+            try:
+                detail = fmt % args
+            except (TypeError, ValueError):
+                detail = fmt
         print(
-            '%s - "%s %s" %s'
-            % (self.client_address[0], self.command, redacted, args[1] if len(args) > 1 else "-"),
+            '%s - "%s %s" %s' % (self.client_address[0], self.command, redacted, detail),
             flush=True,
         )
 

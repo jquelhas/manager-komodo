@@ -65,7 +65,7 @@ reported while the silence is lifted.
   people to stop reading logs.
 - **You cannot silence another host, or anything other than this application.** The endpoint takes
   no matchers and rejects a `host` field with `400`. Which host is being silenced is derived from
-  the mesh address the request arrives from.
+  the token in the URL, which is specific to this host.
 
 ### Failure is not an error
 
@@ -80,11 +80,11 @@ deliberately cleared) behaves exactly as the script does today.
 
 ## What you do not have to do
 
-- **No token, no credential, no secret.** Authentication is the Tailscale mesh itself: the request
-  arrives from a Headscale-assigned, WireGuard-authenticated address, and the control plane maps
-  that address to the host. There is nothing to store in the repository and nothing to rotate.
-- **No new variable to maintain.** `KOMODO_ALERT_SILENCE_URL` is already written into
-  `/opt/SEGCORE/.env` by Komodo, from a fleet-wide Variable. Just read it.
+- **Nothing to store in the repository, and no credential to handle in code.** The URL you read
+  from the `.env` already ends in this host's token, and treating the whole string as opaque is all
+  that is required. Do not parse it, log it, or echo it: it is the credential.
+- **No new variable to maintain.** `KOMODO_ALERT_SILENCE_URL` is written into `/opt/SEGCORE/.env`
+  by Komodo. Just read it.
 - **No TLS configuration.** The host trusts the control plane's internal CA, so a plain `curl`
   works with no `--cacert` and no certificate path to keep in step.
 - **No retries, no backoff, no state.** Two fire-and-forget POSTs.
@@ -107,6 +107,19 @@ The response names the host the control plane attributed the request to. If that
 stop and report it — it would mean the address mapping is wrong, and the wrong host's alerts would
 be silenced.
 
-Error responses, for the record: `403` the caller is not a known application host, `400` a `host`
-field was sent, `502` Alertmanager did not answer, `503` the endpoint is switched off at the
-control plane.
+Error responses, for the record: `403` the token is not recognised (or the request did not come
+through the control plane's proxy), `400` a `host` field was sent, `502` Alertmanager did not
+answer, `503` the endpoint is switched off or not configured at the control plane.
+
+## Correction, 2026-09-08
+
+An earlier version of this brief said there was no token, because the control plane would identify
+the caller by its Tailscale mesh address. **That does not work, and it was measured rather than
+assumed:** a request from an application host reaches the control plane's proxy with
+`X-Forwarded-For: 172.18.0.1` — the manager's Docker bridge gateway — because dockerd's userland
+proxy terminates the incoming connection and opens a fresh one towards the container. Every host
+therefore looks identical at the application layer, so an address-based check authenticates nobody.
+
+The fix put a per-host token in the URL path, which is why **nothing in this brief's code changed**:
+`"${KOMODO_ALERT_SILENCE_URL}/start"` carries the token for free. If you already implemented the
+snippet above, there is nothing to do.
