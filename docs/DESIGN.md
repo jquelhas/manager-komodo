@@ -874,13 +874,18 @@ antes de avançar para a seguinte. Não criar tudo de uma vez.
   > disso é que remover o `compose up` do passo 7 (por flag, ex. `update.sh --no-up` invocado no
   > `pre_deploy`, nunca por remoção do código) deixa de ter custo.
   >
-  > A *expectativa* é que o segundo `up` convirja sem recriar nada, porque ambos apontam ao mesmo
-  > projecto (`gimsv2`), ao mesmo `docker-compose.yml` e ao mesmo `.env` — logo ao mesmo
-  > `com.docker.compose.config-hash`. **Isto é previsão, não medição:** confirmar no primeiro deploy
-  > que o log do `Compose Up` diz `Running` e não `Recreating`, e que o `config-hash` dos containers
-  > não mudou. Se disser `Recreating`, então a invocação do Komodo difere da do `update.sh` — o
-  > suspeito é o `COMPOSE_PROFILES=site`, que o Komodo lê do `--env-file` mas não passa como
-  > `--profile`, e nesse caso o passo 7 deixa de ser redundância inócua e tem de sair.
+  > **Medido a 2026-09-08 nos dois hosts: o segundo `up` diz `Running` em todos os containers, e
+  > nunca `Recreating`.** É convergência pura — espera pela saúde do Postgres e confirma que está
+  > tudo de pé. A redundância é inócua, e de facto acrescenta uma rede de segurança: é a única
+  > coisa que valida o ficheiro compose *depois* de o `update.sh` mexer nos containers.
+  >
+  > Isto era previsão e passou a medição. Confirmou de passagem a dúvida associada: o `demo` mostra
+  > `gims-site` e `gims-site-redirect` como `Running`, logo o Komodo **honra o `COMPOSE_PROFILES` do
+  > `--env-file`** e não precisa de `--profile` na linha de comando.
+  >
+  > Nota de cardinalidade: cada host tem o seu `COMPOSE_PROJECT_NAME` e eles **não** coincidem —
+  > `gimsv2` no `segcore-demo`, `segcore` no `segcore-host1`. O `project_name` da Stack tem de ser
+  > lido dos containers a correr (`com.docker.compose.project`) e nunca assumido.
   >
   > **Limitação que a migração introduz, para não ser descoberta em incidente.** Com
   > `files_on_host = true` o Komodo deixa de fazer `Set Git Remote` e `git pull` — quem faz o
