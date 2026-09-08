@@ -189,6 +189,41 @@ if [ -n "$OVERLAY_OK_BEFORE" ]; then
   fi
 fi
 
+# --- Host tuning: let Docker publish on the mesh address before it exists ---
+# docker-compose.yml publishes several ports on this host's Tailscale address (Postgres 5432 and
+# the backend 3000 for the manager to scrape, Traefik's internal entrypoint, mailpit). That address
+# only exists once tailscaled has logged in, and NOTHING orders dockerd after that: on a cold boot
+# Docker starts the containers first and every publish to the mesh address fails with
+#
+#   failed to bind host port 100.64.0.2:80/tcp: cannot assign requested address
+#
+# and the container exits 128. It bit segcore-demo after a reboot on 2026-09-08: traefik, postgres,
+# backend and mailpit down, the frontends up and serving nothing.
+#
+# Ordering dockerd after tailscaled would NOT be enough: tailscaled.service reaching "active" does
+# not mean the login finished and the address is on tailscale0. ip_nonlocal_bind removes the
+# dependency instead of trying to sequence it — the socket binds an address that does not exist
+# yet and starts serving when it appears. Same mechanism keepalived relies on.
+#
+# NOTE this is a RACE, not the circular dependency the manager has (there, Headscale sits behind
+# Traefik on 443, so it deadlocks permanently rather than probabilistically — see
+# scripts/sysctl/60-manager-komodo.conf). Same fix, different reason.
+#
+# Recovering a host that already hit this needs `docker compose down` first, not `up -d`: a start
+# that fails during network setup leaves NetworkSettings.Networks == {}, and `up -d` will not
+# repair that.
+info "Allowing binds to the mesh address before tailscaled assigns it (ip_nonlocal_bind)..."
+cat > /etc/sysctl.d/60-segcore-host.conf <<'SYSCTL'
+# SEGCORE application host. Written by bootstrap/onboard-host.sh — see that script for the full
+# reasoning. Short version: docker-compose publishes ports on this host's Tailscale address, which
+# does not exist until tailscaled logs in, and nothing orders dockerd after tailscaled. Without
+# this, a cold boot leaves traefik/postgres/backend exited 128 with "cannot assign requested
+# address". Recovery from that state needs `docker compose down` before `up -d`.
+net.ipv4.ip_nonlocal_bind = 1
+SYSCTL
+sysctl -q -p /etc/sysctl.d/60-segcore-host.conf
+info "ip_nonlocal_bind = $(sysctl -n net.ipv4.ip_nonlocal_bind)"
+
 # --- Trust the control plane's internal CA (step-ca) ---
 # Without this, nothing on the host can speak TLS to *.apps.internal, because those certificates
 # are issued by the manager's own step-ca and not by a public CA. It is what lets the app's

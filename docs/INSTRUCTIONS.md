@@ -335,6 +335,50 @@ Check for that state with:
 docker inspect manager-traefik --format '{{json .NetworkSettings.Networks}}'   # {} means broken
 ```
 
+### O mesmo depois de reiniciar um app host (2026-09-08)
+
+**Sintoma.** Uma parte dos containers em baixo, e as que estão de pé não servem nada. No
+`segcore-demo`: `traefik`, `postgres`, `backend` e `mailpit` a `Exited (128)`, os frontends `Up` e
+`unhealthy`, um deles em `Restarting`.
+
+**Causa — a mesma falha de bind, mas por corrida e não por dependência circular.** O
+`docker-compose.yml` da aplicação publica portos no endereço Tailscale do host (Postgres 5432 e
+backend 3000 para o manager fazer scrape, o entrypoint interno do Traefik, o mailpit), e esse
+endereço só existe depois de o `tailscaled` autenticar. Nada ordena o `dockerd` depois disso:
+
+```
+failed to bind host port 100.64.0.2:80/tcp: cannot assign requested address
+```
+
+Aqui não há círculo — o `tailscaled` do host não depende do Traefik do host. É por isso que a falha
+é **probabilística**: reinícios em que o `tailscaled` ganha a corrida arrancam bem, e é o que a
+torna traiçoeira.
+
+**Recuperar agora:**
+
+```bash
+sudo sysctl -w net.ipv4.ip_nonlocal_bind=1
+cd /opt/SEGCORE && docker compose down && docker compose up -d
+```
+
+`down` e não `up -d`, pela mesma razão da secção anterior: os containers que falharam ficaram com
+`NetworkSettings.Networks == {}` e um `up -d` só os arranca nesse estado. Os dados não correm risco
+— o Postgres está no volume `gims-postgres-data`, fora de `/opt/SEGCORE`.
+
+**Correcção permanente.** O `bootstrap/onboard-host.sh` passou a escrever
+`/etc/sysctl.d/60-segcore-host.conf` num host novo. Nos hosts já onboarded, uma vez cada:
+
+```bash
+sudo tee /etc/sysctl.d/60-segcore-host.conf >/dev/null <<'EOF'
+# SEGCORE application host. Ver bootstrap/onboard-host.sh para o raciocínio completo.
+net.ipv4.ip_nonlocal_bind = 1
+EOF
+sudo sysctl --system && sysctl -n net.ipv4.ip_nonlocal_bind    # deve dizer 1
+```
+
+⚠️ **Isto ainda não está aplicado no `segcore-host1`.** O host1 tem exactamente a mesma exposição:
+publica `100.64.0.4:3000`, `:5432`, `:1025` e `:8025`. Só não caiu ainda porque não foi reiniciado.
+
 ## Security audit
 
 The control plane audits its own and the fleet's security posture. Runbook:
