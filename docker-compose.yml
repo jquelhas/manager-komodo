@@ -214,6 +214,10 @@ services:
       # host plus the policy files in git, and applies the baseline/suppressions AT SCRAPE TIME.
       SECURITY_DIR: /security
       SECAUDIT_MAX_SUPPRESSION_DAYS: "180"
+      # Maintenance silence API (mesh only, /maintenance/silence/{start,end}). Set MAINTENANCE_API=off
+      # in .env to make it 503 during an incident without touching the router or the code.
+      MAINTENANCE_API: "${MAINTENANCE_API:-on}"
+      MAINTENANCE_MAX_MINUTES: "${MAINTENANCE_MAX_MINUTES:-45}"
     volumes:
       - ./provisioning/server.py:/app/server.py:ro
       # Single-file bind mount: editing the template needs `up -d --force-recreate provisioning`.
@@ -224,6 +228,9 @@ services:
       # routed process in the stack can neither forge nor erase audit results. Mounted as a
       # DIRECTORY (not per file) so the scans can mv files into place atomically.
       - ./security:/security:ro
+      # step-ca root, served at /provisioning/step-ca-root.crt so a host can bootstrap trust in
+      # *.apps.internal. Read-only, and a public key: nothing secret leaves the manager.
+      - ./docker/traefik/certs/step-ca-root.crt:/app/step-ca-root.crt:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.provisioning.rule=Host(`${PUBLIC_DOMAIN}`) && PathPrefix(`/provisioning`)"
@@ -235,6 +242,20 @@ services:
       - "traefik.http.middlewares.provisioning-ratelimit.ratelimit.period=1m"
       - "traefik.http.middlewares.provisioning-ratelimit.ratelimit.burst=5"
       - "traefik.http.services.provisioning.loadbalancer.server.port=8000"
+      # Maintenance silence for the app hosts, MESH ONLY: websecure-internal is published on
+      # 100.64.0.1 alone (see the traefik ports above), so this router is unreachable from the
+      # internet by binding, and the path carries no /provisioning prefix, so the public router
+      # cannot match it either. Two independent reasons, on purpose.
+      #
+      # Rides on `apps.internal`, which already has a step-ca cert, a dns.extra_records entry and a
+      # step-ca extra_hosts entry, rather than introducing an internal hostname -- that 5-step
+      # checklist is exactly what broke the whole internal ACME queue on 2026-08-23.
+      # Explicit priority because homepage also claims Host(`apps.internal`).
+      - "traefik.http.routers.maintenance.rule=Host(`apps.internal`) && PathPrefix(`/maintenance`)"
+      - "traefik.http.routers.maintenance.entrypoints=websecure-internal"
+      - "traefik.http.routers.maintenance.tls.certresolver=stepca"
+      - "traefik.http.routers.maintenance.priority=200"
+      - "traefik.http.routers.maintenance.service=provisioning"
 
   # VictoriaMetrics — single-node TSDB + PromQL. Internal only (vm.apps.internal via step-ca).
   # Scrapes app hosts directly over the mesh; targets via file_sd.

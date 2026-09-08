@@ -207,3 +207,15 @@ SWAGGER_ENABLED=false
 # ================================================================
 ALERTAS_EMAIL_TO=[[ALERTAS_EMAIL_TO]]
 WEBHOOK_ALERTAS_TOKEN=[[WEBHOOK_ALERTAS_TOKEN]]
+
+# ================================================================
+# CONTROL PLANE — MAINTENANCE SILENCE
+# ================================================================
+# Where scripts/update.sh asks the control plane to silence this host's alerts for the rebuild
+# window, so a PLANNED down does not e-mail backend down/up. Reached over the Tailscale mesh only
+# (apps.internal resolves to the manager's mesh IP); the host authenticates by being on the mesh,
+# so there is no token here and nothing to rotate.
+#
+# EMPTY OR ABSENT = FEATURE OFF. update.sh must skip the silence and carry on, never fail: a host
+# has to stay updatable with no manager at all. Two POSTs, <url>/start and <url>/end.
+KOMODO_ALERT_SILENCE_URL=[[KOMODO_ALERT_SILENCE_URL]]

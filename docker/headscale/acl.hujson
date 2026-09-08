@@ -23,6 +23,24 @@
     // restringe essa role ao IP do manager (100.64.0.1). Ver docs/DESIGN.md.
     { "action": "accept", "src": ["tag:manager"], "dst": ["tag:segcore:3000,9187,8120,5432"] },
 
-    // Hosts das apps — sem tráfego entre si nem para o manager (default deny; sem regra).
+    // Hosts das apps -> manager, SÓ a 443 (entrypoint interno do Traefik, bindado a 100.64.0.1).
+    // Serve um único endpoint: /maintenance/silence/{start,end}, que o scripts/update.sh da app
+    // chama para silenciar os alertas DESTE host durante o rebuild. Porque existe esta regra e não
+    // um endpoint público: o pressuposto da arquitectura é que só o Headscale está exposto à
+    // internet, e o /provisioning só o está porque um host novo ainda não tem mesh (bootstrap).
+    // Um silence de manutenção tem caminho privado, logo usa-o.
+    //
+    // É um alargamento real da direcção de confiança -- até aqui o tráfego só fluía manager ->
+    // hosts. O que o limita não é esta regra, é o endpoint: não aceita matchers, deriva a
+    // identidade do IP de mesh de origem (atribuído pelo Headscale, autenticado por WireGuard) e
+    // tem tecto de tempo no servidor. Um host comprometido silencia-se a si próprio durante 45
+    // minutos e mais nada. Não há token, logo não há segredo novo para distribuir nem rodar.
+    //
+    // Consequência a não esquecer: security/baseline/ports.toml passou a ter 443 em
+    // [defaults.manager.mesh]. Se apagar esta regra, apague lá também, senão o auditor deixa de
+    // apanhar a reabertura acidental.
+    { "action": "accept", "src": ["tag:segcore"], "dst": ["tag:manager:443"] },
+
+    // Hosts das apps — sem tráfego entre si (default deny; sem regra).
   ],
 }

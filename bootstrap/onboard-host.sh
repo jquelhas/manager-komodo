@@ -189,6 +189,35 @@ if [ -n "$OVERLAY_OK_BEFORE" ]; then
   fi
 fi
 
+# --- Trust the control plane's internal CA (step-ca) ---
+# Without this, nothing on the host can speak TLS to *.apps.internal, because those certificates
+# are issued by the manager's own step-ca and not by a public CA. It is what lets the app's
+# scripts/update.sh reach the maintenance-silence endpoint over the mesh
+# (KOMODO_ALERT_SILENCE_URL=https://apps.internal/maintenance/silence) with a plain curl, no
+# --cacert and no path to keep in step with this repo.
+#
+# Fetched over the PUBLIC endpoint on purpose, and it is not a loop: the cert is needed to trust
+# *.apps.internal, so it cannot come from there. The public endpoint has a Let's Encrypt
+# certificate this host already trusts, and a root certificate is a public key -- there is nothing
+# secret in transit either way.
+info "Installing the control plane's step-ca root (trust for *.apps.internal)..."
+CA_DEST=/usr/local/share/ca-certificates/manager-step-ca.crt
+CA_TMP="$(mktemp)"
+if curl -fsSL -m 20 -o "$CA_TMP" "${LOGIN_SERVER}/provisioning/step-ca-root.crt" \
+   && openssl x509 -in "$CA_TMP" -noout -subject >/dev/null 2>&1; then
+  # Verify it parses as a certificate BEFORE it lands in the trust store: update-ca-certificates
+  # ignores malformed files with a warning, so an HTML error page saved here would leave the host
+  # silently untrusting and the failure would only surface weeks later, mid-deploy.
+  install -m 0644 "$CA_TMP" "$CA_DEST"
+  update-ca-certificates >/dev/null 2>&1 || warn "update-ca-certificates reported a problem"
+  info "step-ca root installed ($(openssl x509 -in "$CA_DEST" -noout -subject 2>/dev/null))"
+else
+  warn "could not fetch/verify the step-ca root from ${LOGIN_SERVER} — *.apps.internal will not be"
+  warn "trusted on this host. The maintenance silence in update.sh will be skipped (by design, it"
+  warn "never fails a deploy). Re-run this step later; nothing else depends on it."
+fi
+rm -f "$CA_TMP"
+
 # --- Native Periphery config (written BEFORE setup so it uses ours). ---
 # Accept connections only from our Core (its public key) and only from the mesh range.
 # bind_ip stays default [::] on port 8120 -> no boot-ordering dependency on the mesh IP;

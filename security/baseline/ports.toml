@@ -42,10 +42,18 @@ tcp = [443, 60022]
 udp = [41641]
 required_tcp = [443]
 
-# The ACL has no app-host -> manager rule, so a scan of 100.64.0.1 from a host must find nothing.
-# If something shows up here it is an ACL regression — do NOT "fix" it by widening acl.hujson.
+# What an app host may reach on the manager over the mesh. 443 is Traefik's INTERNAL entrypoint
+# (published on 100.64.0.1 only), and it is open by one deliberate acl.hujson rule
+# (tag:segcore -> tag:manager:443) added on 2026-09-08 for a single endpoint:
+# /maintenance/silence/{start,end}, which the app's scripts/update.sh calls to silence this host's
+# own alerts during a planned rebuild. It is here, permanently, rather than as a suppression,
+# because it is an architectural decision and not a temporary acceptance.
+#
+# ANYTHING ELSE appearing here is an ACL regression — do NOT "fix" it by widening acl.hujson.
+# And if that rule is ever removed, remove 443 here in the same commit: otherwise the auditor
+# stops being able to catch it being reopened by accident, which is the whole point of this entry.
 [defaults.manager.mesh]
-tcp = []
+tcp = [443]
 udp = []
 
 # ---------------------------------------------------------------------------------------------

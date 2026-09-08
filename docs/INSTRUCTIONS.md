@@ -399,6 +399,51 @@ Cria/atualiza as duas Actions e a Procedure `deploy-segcore`. Re-correr após ed
 `update.sh` à mão no host) **não** silencia. Fora de uma janela de deploy, `SegcoreBackendDown`
 continua a alertar normalmente ao fim de 2 min.
 
+#### O silence pedido pelo próprio host (2026-09-08)
+
+O aviso acima é a limitação de fundo do mecanismo das Actions: o silence é propriedade do *caminho*
+usado para disparar o deploy, e há três caminhos (Procedure, botão *Deploy*/*Pull* na UI, e
+`./scripts/update.sh` por SSH). Só um deles silencia.
+
+A correcção é o `update.sh` pedir o silence ele próprio, e assim os três caminhos ficam cobertos
+pelo mesmo mecanismo. **O lado do manager está feito e testado; falta o lado da aplicação** — ver
+`docs/APP-MAINTENANCE-SILENCE.md`, que é o documento a entregar à equipa de desenvolvimento.
+
+```
+host (update.sh)  ──mesh, 443──>  apps.internal/maintenance/silence/{start,end}
+                                        └─> provisioning ──> alertmanager:9093
+```
+
+Só pela mesh, nunca pela internet: o `websecure-internal` do Traefik está publicado em
+`100.64.0.1:443` e mais nada, e o caminho **não** tem o prefixo `/provisioning`, que é o único que
+o entrypoint público encaminha. São duas razões independentes, de propósito.
+
+**Não há token.** A identidade vem do IP de mesh de origem — atribuído pelo Headscale e autenticado
+por WireGuard — validado contra `security/state/targets.json`. O endpoint não aceita matchers nem o
+campo `host` (responde 400 se vier), e tem tecto de 45 min no servidor. Um host comprometido
+silencia-se a si próprio durante 45 minutos e mais nada.
+
+Requer duas coisas em cada host, ambas tratadas pelo `bootstrap/onboard-host.sh` num host novo:
+
+- **o root do step-ca no trust store** (`/usr/local/share/ca-certificates/manager-step-ca.crt`),
+  buscado a `${PUBLIC_DOMAIN}/provisioning/step-ca-root.crt`. Sem ele o `curl` a `apps.internal`
+  falha na validação do certificado. Nos hosts já onboarded tem de ser instalado à mão:
+  ```bash
+  sudo curl -fsSL -o /usr/local/share/ca-certificates/manager-step-ca.crt \
+       https://<PUBLIC_DOMAIN>/provisioning/step-ca-root.crt && sudo update-ca-certificates
+  ```
+- **a variável no `.env`**, `KOMODO_ALERT_SILENCE_URL`, escrita pelo Komodo a partir da Variable com
+  o mesmo nome (`APPVAR_KOMODO_ALERT_SILENCE_URL` no `.env` do manager). Vazia ou ausente = função
+  desligada, e o `update.sh` salta o silence sem falhar.
+
+Para desligar em incidente, sem tocar no router nem no código: `MAINTENANCE_API=off` no `.env` do
+manager + `docker compose up -d --force-recreate provisioning`. O endpoint passa a responder 503.
+
+Quando o `update.sh` passar a fazer isto, as duas Actions em Deno e o estágio de silence da
+Procedure deixam de ser necessários — a Procedure fica só `BatchPullRepo` + `BatchDeployStack`. Os
+dois mecanismos coexistem sem interferir: usam marcadores `createdBy` distintos (`komodo` e
+`maintenance-api`), logo nenhum expira os silences do outro.
+
 ## Offboard (remove a host)
 
 Delete the Komodo Server + Repo (removes it from monitoring auto-discovery and deploys), then remove

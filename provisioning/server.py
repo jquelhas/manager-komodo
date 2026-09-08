@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import socketserver
 import threading
 import time
@@ -49,6 +50,34 @@ GET_RE = re.compile(r"^/provisioning/([^/]+)/install\.sh$")
 BURN_RE = re.compile(r"^/provisioning/([^/]+)/burn$")
 COMPLETE_RE = re.compile(r"^/provisioning/([^/]+)/complete$")
 ALERT_RE = re.compile(r"^/alert/komodo$")  # internal only (Traefik routes /provisioning only)
+
+# Maintenance silence, called by the app's scripts/update.sh so a PLANNED rebuild does not e-mail
+# backend down/up. MESH ONLY, and the path deliberately carries no /provisioning prefix: the public
+# entrypoint routes `PathPrefix(/provisioning)` and nothing else, so this cannot be reached from the
+# internet by construction rather than by configuration. The mesh route is a separate Traefik router
+# on websecure-internal (bound to 100.64.0.1 only) plus one narrow Headscale ACL rule.
+MAINTENANCE_RE = re.compile(r"^/maintenance/silence/(start|end)$")
+# Kill switch: set MAINTENANCE_API=off in the manager .env to make the endpoint 503 without editing
+# code or pulling the Traefik router, for use during an incident.
+MAINTENANCE_API = os.environ.get("MAINTENANCE_API", "on").strip().lower() not in ("off", "0", "false")
+# Server-side ceiling on the silence window. The client asks; the server decides. The worst measured
+# update is ~15 min, so this is ample -- and it is what stops an update.sh that dies mid-run from
+# leaving the monitoring blind: /end is the prompt cleanup, this is the safety net.
+MAINTENANCE_MAX_MINUTES = int(os.environ.get("MAINTENANCE_MAX_MINUTES", "45"))
+# Distinct from the `komodo` marker used by the Deno silence Actions, so the two mechanisms can
+# coexist during the migration without expiring each other's silences.
+MAINTENANCE_CREATED_BY = "maintenance-api"
+# The only peer whose X-Forwarded-For is believed. Resolved by name because container addresses
+# change on every recreate.
+TRUSTED_PROXY_HOST = os.environ.get("TRUSTED_PROXY_HOST", "traefik")
+_PROXY_CACHE = {"at": 0.0, "ips": set()}
+_PROXY_LOCK = threading.Lock()
+# The step-ca ROOT CERTIFICATE, served publicly on purpose. A root cert is a public key plus a name
+# -- there is nothing in it to keep secret, and publishing it is what every public CA does. It is
+# here to break a bootstrap loop: a host needs this cert to speak TLS to anything on
+# *.apps.internal, so it cannot fetch the cert from *.apps.internal. It fetches it over the public
+# endpoint, whose Let's Encrypt certificate the host already trusts.
+STEPCA_ROOT_PATH = os.environ.get("STEPCA_ROOT_PATH", "/app/step-ca-root.crt")
 # mesh_ip is used to build the Server address Core will dial — only accept our mesh range.
 MESH_IP_RE = re.compile(r"^100\.64\.\d{1,3}\.\d{1,3}$")
 NAME_BAD = re.compile(r"[^A-Za-z0-9._-]")
@@ -362,6 +391,166 @@ def post_alertmanager(alerts):
         return False, f"http {e.code}: {(e.read() or b'').decode(errors='replace')[:200]}"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
+
+
+# --- Maintenance silences (mesh only) -------------------------------------------------------
+# The caller does NOT get to say who it is, and does not get to supply matchers. Identity comes
+# from the source address, which on the mesh is a Headscale-assigned, WireGuard-authenticated IP:
+# a host cannot claim to be another host. Consequence worth stating plainly: a compromised app host
+# can silence its OWN app alerts for at most MAINTENANCE_MAX_MINUTES, and nothing else. That is
+# strictly stronger than the shared bearer token this would have needed over the public entrypoint,
+# and it means there is no new secret to distribute or rotate.
+
+
+def _am(method, path, body=None):
+    """Call Alertmanager's v2 API. Returns (status, parsed-body-or-None)."""
+    req = urllib.request.Request(
+        f"{ALERTMANAGER_URL}{path}",
+        data=None if body is None else json.dumps(body).encode(),
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read()
+            try:
+                return r.status, json.loads(raw) if raw else None
+            except ValueError:
+                return r.status, None
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception:  # noqa: BLE001
+        return 0, None
+
+
+def _trusted_proxy_ips():
+    """Current addresses of the reverse proxy, resolved by service name (they change on recreate).
+
+    Cached briefly: this is on the request path, and a DNS lookup per request would be both slow
+    and a new failure mode.
+    """
+    now = time.time()
+    with _PROXY_LOCK:
+        if _PROXY_CACHE["at"] + 30 > now and _PROXY_CACHE["ips"]:
+            return _PROXY_CACHE["ips"]
+    try:
+        ips = {ai[4][0] for ai in socket.getaddrinfo(TRUSTED_PROXY_HOST, None)}
+    except OSError:
+        ips = set()
+    with _PROXY_LOCK:
+        if ips:
+            _PROXY_CACHE.update(at=now, ips=ips)
+        return ips or _PROXY_CACHE["ips"]
+
+
+def maintenance_client_ip(headers, peer):
+    """The address to attribute this request to, or None if it cannot be established.
+
+    X-Forwarded-For is only believed when the connection itself comes from the reverse proxy.
+    That check is the point: `provisioning` publishes no port, but a dozen other containers share
+    its compose network, and any one of them could otherwise POST here with a forged header and
+    silence a host's alerts. Requiring the peer to be Traefik reduces the set of things that can
+    reach this endpoint to "whatever Traefik routes", which is one mesh-only router.
+
+    Traefik APPENDS the connection's remote address to any X-Forwarded-For it received, so a client
+    that sends its own forged header arrives as [forged..., real]: the LAST element is the one
+    Traefik wrote, and the only one worth reading.
+    """
+    if peer not in _trusted_proxy_ips():
+        return None
+    xff = (headers.get("X-Forwarded-For") or "").strip()
+    return xff.split(",")[-1].strip() if xff else None
+
+
+def maintenance_host_for_ip(addr):
+    """Map a mesh IP to the app host it belongs to, or None.
+
+    The allowlist is security/state/targets.json, which the discovery scan already maintains and
+    which is mounted read-only -- so this endpoint cannot widen its own set of callers. Only hosts
+    with the app role qualify: the matchers below are app="segcore", so nothing else has anything
+    to silence.
+    """
+    if not MESH_IP_RE.match(addr or ""):
+        return None
+    data = _sec_load("state/targets.json")
+    for t in (data or {}).get("targets", []):
+        if t.get("role") == APP_TAG and t.get("mesh_ip") == addr:
+            host = str(t.get("host") or "").strip()
+            return host or None
+    return None
+
+
+def _maintenance_matchers(host):
+    """Built here, never accepted from the caller. `host` is the label vmalert attaches from the
+    scrape target (verified: up{job="gims-backend"} carries host="segcore-demo"), and app="segcore"
+    is on every rule in docker/vmalert/rules/apps/."""
+    return [
+        {"name": "app", "value": APP_TAG, "isRegex": False, "isEqual": True},
+        {"name": "host", "value": host, "isRegex": False, "isEqual": True},
+    ]
+
+
+def _maintenance_ours(host):
+    """Active silences this endpoint created for `host`. Matched on creator + the host matcher, so
+    an operator's hand-made silence is never touched."""
+    st, body = _am("GET", "/api/v2/silences")
+    if st != 200 or not isinstance(body, list):
+        return None
+    out = []
+    for sil in body:
+        if sil.get("createdBy") != MAINTENANCE_CREATED_BY:
+            continue
+        if (sil.get("status") or {}).get("state") == "expired":
+            continue
+        if any(m.get("name") == "host" and m.get("value") == host for m in sil.get("matchers") or []):
+            out.append(sil.get("id"))
+    return [i for i in out if i]
+
+
+def maintenance_silence_start(host, minutes):
+    """Create (or replace) this host's maintenance silence. Returns (http_status, response dict).
+
+    Idempotent by replacement: without expiring ours first, a retried deploy would stack silences
+    and /end would only clear one, leaving the host quietly unmonitored after the deploy finished.
+    """
+    minutes = max(1, min(int(minutes), MAINTENANCE_MAX_MINUTES))
+    existing = _maintenance_ours(host)
+    if existing is None:
+        return 502, {"ok": False, "error": "alertmanager unreachable"}
+    for sid in existing:
+        _am("DELETE", f"/api/v2/silence/{sid}")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ends = now + datetime.timedelta(minutes=minutes)
+    fmt = "%Y-%m-%dT%H:%M:%S.000Z"
+    st, body = _am("POST", "/api/v2/silences", {
+        "matchers": _maintenance_matchers(host),
+        "startsAt": now.strftime(fmt),
+        "endsAt": ends.strftime(fmt),
+        "createdBy": MAINTENANCE_CREATED_BY,
+        "comment": f"deploy {host}",
+    })
+    if st != 200 or not isinstance(body, dict):
+        return 502, {"ok": False, "error": f"alertmanager rejected the silence (http {st})"}
+    return 200, {
+        "ok": True, "host": host, "silence_id": body.get("silenceID"),
+        "minutes": minutes, "ends_at": ends.strftime(fmt),
+        "replaced": len(existing),
+    }
+
+
+def maintenance_silence_end(host):
+    """Expire this host's maintenance silences. Idempotent: none active is success with expired=0,
+    not 404 -- update.sh calls this unconditionally, and a 404 in every clean deploy's log is noise
+    that teaches people to stop reading the log."""
+    ours = _maintenance_ours(host)
+    if ours is None:
+        return 502, {"ok": False, "error": "alertmanager unreachable"}
+    expired = 0
+    for sid in ours:
+        st, _ = _am("DELETE", f"/api/v2/silence/{sid}")
+        if 200 <= st < 300:
+            expired += 1
+    return 200, {"ok": True, "host": host, "expired": expired}
 
 
 # --- Per-container metrics exporter: reuse the stats Komodo/Periphery already collects ---
@@ -1143,6 +1332,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        # step-ca root, for a host to bootstrap trust in *.apps.internal (see STEPCA_ROOT_PATH).
+        if self.path == "/provisioning/step-ca-root.crt":
+            try:
+                with open(STEPCA_ROOT_PATH, "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                self.log_error("step-ca root not readable at %s", STEPCA_ROOT_PATH)
+                return self._404()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-pem-file")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         # Prometheus http_sd (internal only — Traefik never routes /sd publicly).
         if self.path in SD_PORTS:
             body = json.dumps(sd_targets(SD_PORTS[self.path])).encode()
@@ -1173,7 +1376,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (ValueError, OSError):
             return {}
 
+    def _json(self, status, payload):
+        body = (json.dumps(payload) + "\n").encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
+        # Maintenance silence, from an app host's scripts/update.sh over the mesh.
+        mm = MAINTENANCE_RE.match(self.path)
+        if mm:
+            if not MAINTENANCE_API:
+                return self._json(503, {"ok": False, "error": "maintenance api disabled"})
+            addr = maintenance_client_ip(self.headers, self.client_address[0])
+            host = maintenance_host_for_ip(addr)
+            if not host:
+                # Deliberately says nothing about which addresses would work.
+                self.log_error("maintenance silence refused for %s", addr)
+                return self._json(403, {"ok": False, "error": "caller is not a known app host"})
+            data = self._json_body()
+            if "host" in data:
+                # Rejected rather than ignored: silently dropping it would let somebody build a
+                # deploy script around the belief that one host can silence another.
+                return self._json(400, {"ok": False,
+                                        "error": "host is derived from the mesh address, not accepted"})
+            if mm.group(1) == "start":
+                st, payload = maintenance_silence_start(host, data.get("minutes", MAINTENANCE_MAX_MINUTES))
+            else:
+                st, payload = maintenance_silence_end(host)
+            if not payload.get("ok"):
+                self.log_error("maintenance silence/%s for %s: %s",
+                               mm.group(1), host, payload.get("error"))
+            return self._json(st, payload)
+
         # Komodo Custom alerter -> Alertmanager relay (internal only).
         if ALERT_RE.match(self.path):
             payload = self._json_body()
