@@ -17,3 +17,8 @@ security/state/*
 # Per-run archive of host audit reports (gzipped NDJSON, pruned by SECAUDIT_RETENTION_DAYS).
 # Regenerated on every collection, and an inventory of our own weaknesses.
 var/secaudit/
+
+# Point-in-time TOML exports of Komodo resources, taken before a migration so the previous
+# resource can be recreated verbatim. Operational state, not source: while a resource still
+# exists, read/ExportResourcesToToml regenerates it on demand.
+var/komodo-resource-backups/

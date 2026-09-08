@@ -819,6 +819,63 @@ antes de avançar para a seguinte. Não criar tudo de uma vez.
 - **Não usar GitOps do Komodo** (sync de stacks a partir de git). Komodo aqui é apenas
   orquestrador de comandos. Razão: `update.sh` faz muito mais do que `docker compose up`
   (backup, migrations, manutenção) — GitOps seria refactor enorme com risco.
+
+  > **Correcção (2026-09-08, medido em produção no `segcore-demo`).** A razão acima já não se
+  > aplica: as Stacks do Komodo têm `pre_deploy`/`post_deploy`, portanto uma Stack corre o
+  > `update.sh` tal e qual, sem refactor nenhum. A decisão inverteu-se, e o motivo é de segurança
+  > operacional, não de conveniência: um recurso **Repo** tem um botão *Reclone* cuja primeira
+  > etapa se chama literalmente `Clean Repo Root` — apaga o directório e volta a clonar. Um clique
+  > acidental nele no `segcore-demo` apagou `/opt/SEGCORE` e levou os certificados com ele. Uma
+  > **Stack** não tem acção equivalente: `reclone` é apenas um campo de configuração, `false` por
+  > omissão, que exige editar a configuração em vez de um clique.
+  >
+  > O que foi medido com duas Stacks-sonda (criadas, observadas e destruídas):
+  >
+  > - **Ordem das etapas:** `Write Environment File` → `Pre Deploy` → `Compose Config` →
+  >   `Compose Pull` → `Compose Up` → `Post Deploy`. O `.env` gerado a partir das Variables do
+  >   Komodo é escrito **antes** do `pre_deploy`, ou seja o `update.sh` recebe a mesma garantia que
+  >   o `on_pull` do Repo lhe dava. Com `files_on_host` + `run_directory`, o ficheiro aterra em
+  >   `/opt/SEGCORE/.env`, verificado.
+  > - **`project_name` não é opcional — é a peça central.** O Komodo passa `-p <nome da stack>`
+  >   **explicitamente** na linha de comando, o que se sobrepõe ao `COMPOSE_PROJECT_NAME=gimsv2`
+  >   do `.env`. Uma Stack chamada `segcore-demo` sem este campo correria
+  >   `docker compose -p segcore-demo`, criando um projecto **paralelo** ao que o `update.sh` e o
+  >   `make` gerem, e a colisão apareceria nos `container_name: gims-*`. Com
+  >   `project_name = "gimsv2"`, a Stack **adopta** os 11 containers já a correr (verificado por
+  >   `read/ListStackServices`) e o Komodo passa a ver a realidade em vez de um projecto vazio.
+  > - **`auto_pull = false`.** O `update.sh` constrói as imagens no passo 4 e o compose puxa o que
+  >   falta no passo 7. Uma etapa `Compose Pull` tentaria puxar as imagens `gimsv2-*`, que são
+  >   construídas localmente e não existem em registry nenhum.
+  > - **`send_alerts = false`.** O passo 2 do `update.sh` faz `compose down` de todo o projecto,
+  >   logo alertas de estado da Stack mandariam um par de emails em cada update. O sinal real da
+  >   aplicação vem do vmalert (latência, 5xx), que é melhor.
+  >
+  > **Redundância aceite, com TODO.** O passo 7 do `update.sh` já faz `docker compose up -d`, e o
+  > `Compose Up` da Stack corre depois dele. Fica assim por decisão explícita; remover o passo 7 do
+  > `update.sh` é trabalho do lado do repo da aplicação e está em TODO, não feito.
+  >
+  > A *expectativa* é que o segundo `up` convirja sem recriar nada, porque ambos apontam ao mesmo
+  > projecto (`gimsv2`), ao mesmo `docker-compose.yml` e ao mesmo `.env` — logo ao mesmo
+  > `com.docker.compose.config-hash`. **Isto é previsão, não medição:** confirmar no primeiro deploy
+  > que o log do `Compose Up` diz `Running` e não `Recreating`, e que o `config-hash` dos containers
+  > não mudou. Se disser `Recreating`, então a invocação do Komodo difere da do `update.sh` — o
+  > suspeito é o `COMPOSE_PROFILES=site`, que o Komodo lê do `--env-file` mas não passa como
+  > `--profile`, e nesse caso o passo 7 deixa de ser redundância inócua e tem de sair.
+  >
+  > **Limitação que a migração introduz, para não ser descoberta em incidente.** Com
+  > `files_on_host = true` o Komodo deixa de fazer `Set Git Remote` e `git pull` — quem faz o
+  > `git pull` é o passo 3 do `update.sh`, autenticando-se com o token que o Komodo já deixou
+  > embutido em `/opt/SEGCORE/.git/config`. **Se o token do GitHub for rodado, nada actualiza esse
+  > URL**: tem de ser feito à mão no host (ou recriando temporariamente o Repo a partir de
+  > `var/komodo-resource-backups/`).
+  >
+  > **O Procedure `deploy-segcore` tem de acompanhar, e é o passo que falta.** Faz `BatchPullRepo`
+  > com o padrão `segcore-*`; com o Repo e a Stack a corresponderem **ambos** ao padrão, o
+  > `update.sh` correria **duas vezes** no demo — dois backups de base de dados e ~30 min. A
+  > alteração necessária: estreitar o padrão dos repos para `segcore-host1` e acrescentar uma etapa
+  > `BatchDeployStack` com `segcore-*`. Enquanto o `host1` não migrar, o Procedure precisa das duas
+  > etapas. **Até isso estar feito, não correr o Procedure**, e o `segcore-demo` continua a ter o
+  > Repo como caminho de deploy activo.
 - **A validação do `.env` vive no `update.sh` do GIMSv2, não no `on_pull`** (feito 2026-08-23). As
   verificações — placeholders `[[NOME]]` por resolver, `CHANGE_ME`, `TENANT_CONFIG_KEY` vazia, e o
   ficheiro ser carregável por `source` — estão no topo do `scripts/update.sh` da app. O `on_pull` é
