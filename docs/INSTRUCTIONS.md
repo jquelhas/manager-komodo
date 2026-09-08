@@ -379,6 +379,49 @@ sudo sysctl --system && sysctl -n net.ipv4.ip_nonlocal_bind    # deve dizer 1
 ⚠️ **Isto ainda não está aplicado no `segcore-host1`.** O host1 tem exactamente a mesma exposição:
 publica `100.64.0.4:3000`, `:5432`, `:1025` e `:8025`. Só não caiu ainda porque não foi reiniciado.
 
+## Public SSH (60022)
+
+60022 is the break-glass door and it is open to the internet — the one service on these machines
+whose configuration cannot be left at the distro default. The drop-in is
+[`bootstrap/sshd/00-hardening.conf`](../bootstrap/sshd/00-hardening.conf); `bootstrap/onboard-host.sh`
+writes the identical content on a new host.
+
+**The `00-` prefix is load-bearing.** sshd takes the **first** value it obtains for each keyword and
+reads `/etc/ssh/sshd_config.d/*.conf` alphabetically, so this file has to sort before
+`50-cloud-init.conf`, which sets `PasswordAuthentication`. Renaming it to `60-` would silently turn
+password authentication back on: no error, no warning.
+
+**Check what a machine actually offers**, from anywhere:
+
+```bash
+ssh -p 60022 -o BatchMode=yes -o PreferredAuthentications=none zzprobe@<ip> true 2>&1 \
+  | grep -oE 'Permission denied \(.*\)'
+# want: (publickey)          bad: (publickey,password)
+```
+
+Measured on 2026-09-08: manager and `segcore-demo` were `(publickey)`, **`segcore-host1` was
+`(publickey,password)`** — a brute-forceable public door, because this file had only ever been
+written by hand on the other two machines and never by the onboarding. That is what put it in the
+repo.
+
+**Apply to an existing machine:**
+
+```bash
+# manager (from the repo)
+sudo cp bootstrap/sshd/00-hardening.conf /etc/ssh/sshd_config.d/ && sudo sshd -t && sudo systemctl reload ssh
+
+# an app host: paste the same file, then
+sudo sshd -t && sudo systemctl reload ssh && sudo sshd -T | grep -E 'passwordauth|maxauthtries'
+```
+
+Always `sshd -t` before reloading, and `reload` and not `restart`: reload keeps the session you are
+typing in, so a mistake is recoverable rather than a locked door.
+
+**Four lynis SSH-7408 suggestions are refused on purpose** — `AllowTcpForwarding`, `MaxSessions`,
+`ClientAliveCountMax`, `TCPKeepAlive`. The reasoning is in the drop-in itself, next to the settings
+it is about, so it is read by whoever is tempted to "complete the set". They keep showing in the
+audit as *suggestions*, which never alert.
+
 ## Security audit
 
 The control plane audits its own and the fleet's security posture. Runbook:

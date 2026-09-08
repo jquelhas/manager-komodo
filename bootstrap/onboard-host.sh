@@ -189,6 +189,82 @@ if [ -n "$OVERLAY_OK_BEFORE" ]; then
   fi
 fi
 
+# --- Public SSH: keys only, and hardened ---
+# 60022 is the break-glass door and it is open to the internet, so it is the one service on this
+# host whose configuration cannot be left at the distro default. segcore-host1 was found on
+# 2026-09-08 offering "publickey,password" there — brute-forceable — because this file had only
+# ever been written by hand on the other two machines and never by the onboarding.
+#
+# The 00- prefix is load-bearing: sshd takes the FIRST value for each keyword and reads the drop-in
+# directory alphabetically, so this has to sort before 50-cloud-init.conf, which sets
+# PasswordAuthentication. `sshd -t` before reloading, and reload rather than restart, so a mistake
+# does not close the door being used to fix it.
+info "Hardening public SSH (key-only, MaxAuthTries 3, no agent/X11 forwarding)..."
+cat > /etc/ssh/sshd_config.d/00-hardening.conf <<'SSHD'
+# Break-glass public SSH on 60022 — key-only, hardened for a port exposed to the internet.
+#
+# WHY THE NAME STARTS WITH 00: sshd uses the FIRST obtained value for each keyword and reads
+# /etc/ssh/sshd_config.d/*.conf alphabetically, so this must sort before 50-cloud-init.conf and
+# 60-cloudimg-settings.conf, which set PasswordAuthentication. Renaming it to 60- would silently
+# disable everything here — no error, no warning, just password auth back on.
+#
+# Written by bootstrap/onboard-host.sh. The reviewable copy is bootstrap/sshd/00-hardening.conf
+# in the manager repo; KEEP THE TWO IN SYNC.
+# Always `sshd -t` before reloading, and `reload` rather than `restart`: reload keeps the session
+# you are typing in, so a mistake here is recoverable instead of a locked door.
+
+# --- authentication: keys only ---------------------------------------------------------------
+# segcore-host1 was found on 2026-09-08 offering "publickey,password" on its public 60022, i.e. a
+# brute-forceable door, because this file only ever existed by hand on the other two machines.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+
+# --- hardening (lynis SSH-7408) ---------------------------------------------------------------
+# Tries per connection, down from 6. The single most useful line here on a public port.
+MaxAuthTries 3
+# No X11 on a server. Surface removed at zero cost.
+X11Forwarding no
+# Agent forwarding exposes the OPERATOR'S local ssh-agent to this host, so a compromised host can
+# use the operator's keys elsewhere. Unlike TCP forwarding, a user holding a shell CANNOT recreate
+# it, so turning it off actually removes a capability instead of just being inconvenient.
+AllowAgentForwarding no
+# Logs the public-key fingerprint of each accepted login: answers "which key got in", which INFO
+# does not. Costs a few more lines per login.
+LogLevel VERBOSE
+
+# --- DELIBERATELY NOT SET, so nobody "completes the set" later ---------------------------------
+# The remaining four lynis SSH-7408 suggestions are refused on purpose. They will keep appearing in
+# the audit as suggestions, which never alert (only warnings and over-budget counts do).
+#
+# AllowTcpForwarding no
+#   Stops nobody who is already in: an account with a shell can run its own forwarder in one line.
+#   And this is the BREAK-GLASS path — the access used when the mesh is down, which is exactly when
+#   an operator may need a tunnel to reach a service that is no longer reachable over the mesh.
+#   Real cost, no real gain.
+#
+# MaxSessions 2
+#   Breaks connection multiplexing (ControlMaster, VS Code Remote, several windows over one
+#   connection) for no measurable security gain.
+#
+# ClientAliveCountMax 2
+#   Has NO EFFECT while ClientAliveInterval is 0, which it is. Making it effective means adding an
+#   idle timeout, which on the break-glass path would disconnect an operator in the middle of a
+#   long-running command that prints nothing.
+#
+# TCPKeepAlive no
+#   lynis wants this only in combination with ClientAlive*; on its own it makes dead sessions
+#   linger instead of being reaped. Net negative here.
+SSHD
+chmod 0644 /etc/ssh/sshd_config.d/00-hardening.conf
+if sshd -t; then
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || warn "could not reload sshd"
+  info "sshd: $(sshd -T 2>/dev/null | grep -c '^passwordauthentication no') x password auth off, MaxAuthTries $(sshd -T 2>/dev/null | sed -n 's/^maxauthtries //p')"
+else
+  # Never leave a host with a config sshd rejects: the next reboot would come up with no SSH.
+  rm -f /etc/ssh/sshd_config.d/00-hardening.conf
+  die "sshd rejected the hardening drop-in; removed it and stopped. Fix bootstrap/sshd/00-hardening.conf."
+fi
+
 # --- Host tuning: let Docker publish on the mesh address before it exists ---
 # docker-compose.yml publishes several ports on this host's Tailscale address (Postgres 5432 and
 # the backend 3000 for the manager to scrape, Traefik's internal entrypoint, mailpit). That address
