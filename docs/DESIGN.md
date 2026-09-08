@@ -851,8 +851,28 @@ antes de avançar para a seguinte. Não criar tudo de uma vez.
   >   aplicação vem do vmalert (latência, 5xx), que é melhor.
   >
   > **Redundância aceite, com TODO.** O passo 7 do `update.sh` já faz `docker compose up -d`, e o
-  > `Compose Up` da Stack corre depois dele. Fica assim por decisão explícita; remover o passo 7 do
-  > `update.sh` é trabalho do lado do repo da aplicação e está em TODO, não feito.
+  > `Compose Up` da Stack corre depois dele. Fica assim por decisão explícita; mexer no passo 7 é
+  > trabalho do lado do repo da aplicação e está em TODO, não feito.
+  >
+  > **Como NÃO o fazer, porque a solução óbvia está errada.** "Cortar o `update.sh` a partir do
+  > `docker compose up`" quebra duas coisas de uma vez:
+  >
+  > 1. **A autonomia do host, que é a razão desta arquitectura.** O `update.sh` correr sozinho no
+  >    host, sem manager, tem de deixar a aplicação a servir. Sem o `compose up` final, um
+  >    `./scripts/update.sh` à mão deixa-a **em baixo** — o passo 2 fez `compose down`.
+  > 2. **O bloco de verificação final.** Ele corre depois do ciclo down/up e é o único sítio onde um
+  >    Traefik em crash-loop se nota (o Traefik não tem healthcheck no compose, logo um update dava
+  >    "sucesso" com ninguém servido — ver o commit `da2a0ca` do GIMSv2). Sem o `compose up` antes
+  >    dele, verificaria uma aplicação parada.
+  >
+  > **A forma correcta, se e quando se fizer:** extrair as verificações para um comando próprio
+  > (`./scripts/verifica-deploy.sh`), chamado pelo `update.sh` no fim **e** declarado no
+  > `post_deploy` da Stack — uma implementação, dois pontos de entrada. O `update.sh` mantém o
+  > `compose up` e continua a funcionar sozinho; o `post_deploy` corre **depois** do `Compose Up` do
+  > Komodo, que é hoje a única coisa que toca nos containers e não é verificada por ninguém. Se sair
+  > com código != 0, o deploy fica vermelho no Komodo em vez de verde sem ninguém servido. Só depois
+  > disso é que remover o `compose up` do passo 7 (por flag, ex. `update.sh --no-up` invocado no
+  > `pre_deploy`, nunca por remoção do código) deixa de ter custo.
   >
   > A *expectativa* é que o segundo `up` convirja sem recriar nada, porque ambos apontam ao mesmo
   > projecto (`gimsv2`), ao mesmo `docker-compose.yml` e ao mesmo `.env` — logo ao mesmo
