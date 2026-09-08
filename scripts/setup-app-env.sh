@@ -235,10 +235,31 @@ lint() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Seed the Repo environments
+# 3. Seed the deploy resources' environments
 # ---------------------------------------------------------------------------
+# A host is deployed either as a Repo (Komodo writes the env file on Pull, then runs `on_pull`) or
+# as a Stack (writes it on Deploy, then runs `pre_deploy`). The fleet is mid-migration from the
+# former to the latter -- see the 2026-09-08 correction in docs/DESIGN.md -- so both have to be
+# handled here. Reading only ListRepos would silently stop covering every migrated host: the loop
+# iterates what the list contains, so a missing host produces no warning at all.
 SERVERS="$(kapi read/ListServers '{}')"
 REPOS="$(kapi read/ListRepos '{}')"
+STACKS="$(kapi read/ListStacks '{}')"
+
+# name<TAB>kind, restricted to the app tag. A name that exists as BOTH (the transient state of a
+# half-finished migration) is reported and handled as the Stack only: writing to the obsolete Repo
+# would be pointless, and failing outright would make this tool unusable exactly during the
+# migration it has to support.
+TARGETS="$( { jq -r --arg t "$APP_TAG" '.[].name | select(startswith($t + "-")) | . + "\trepo"'  <<<"$REPOS"
+             jq -r --arg t "$APP_TAG" '.[].name | select(startswith($t + "-")) | . + "\tstack"' <<<"$STACKS"; } | sort )"
+DUPES="$(cut -f1 <<<"$TARGETS" | sort | uniq -d)"
+if [ -n "$DUPES" ]; then
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    warn "$d exists as both a Repo and a Stack — using the Stack (finish the migration: delete the Repo)"
+    TARGETS="$(grep -v -x -F "$d	repo" <<<"$TARGETS")"
+  done <<<"$DUPES"
+fi
 
 # The Server address is https://<mesh-ip>:8120 — the same source the Prometheus http_sd in
 # provisioning/server.py derives its targets from.
@@ -248,14 +269,26 @@ mesh_ip_of() {
 }
 
 rc=0
-while read -r repo_name; do
+while IFS=$'\t' read -r repo_name kind; do
   [ -n "$repo_name" ] || continue
-  case "$repo_name" in "$APP_TAG"-*) ;; *) continue ;; esac
   [ -n "$ONLY" ] && [ "$ONLY" != "$repo_name" ] && continue
   [ -n "$PRINT_ONLY" ] && [ "$PRINT_ONLY" != "$repo_name" ] && continue
 
-  cfg="$(kapi read/GetRepo "$(jq -n --arg r "$repo_name" '{repo:$r}')")"
+  # The two resource types differ in three places and nowhere else: the endpoints, the name of the
+  # request field, and the name of the post-write hook. `environment`, `env_file_path` and
+  # `skip_secret_interp` are spelled identically on both configs.
+  case "$kind" in
+    repo)  R_GET=read/GetRepo;  R_UPD=write/UpdateRepo;  R_ARG=repo;  R_HOOK=on_pull ;;
+    stack) R_GET=read/GetStack; R_UPD=write/UpdateStack; R_ARG=stack; R_HOOK=pre_deploy ;;
+    *)     die "internal: unknown resource kind '$kind' for $repo_name" ;;
+  esac
+
+  cfg="$(kapi "$R_GET" "$(jq -n --arg k "$R_ARG" --arg r "$repo_name" '{($k):$r}')")"
   server_id="$(jq -r '.config.server_id' <<<"$cfg")"
+  # A Stack's hook runs in its run_directory; a Repo's runs in the repo root, which is what an empty
+  # path means there. Taking it from the config keeps the app path out of this script -- and the
+  # hook must be sent as a whole struct, because a partial one would reset `shell_mode` to false.
+  hook_path="$(jq -r 'if .config.files_on_host then (.config.run_directory // "") else "" end' <<<"$cfg")"
   current="$(jq -r '.config.environment // ""' <<<"$cfg")"
   mesh_ip="$(mesh_ip_of "$server_id")"
   host="${repo_name#"$APP_TAG"-}"
@@ -266,7 +299,7 @@ while read -r repo_name; do
   if [ -n "$PRINT_ONLY" ]; then printf '%s\n' "$rendered"; exit 0; fi
 
   echo
-  echo "== $repo_name (host $host, mesh $mesh_ip)"
+  echo "== $repo_name ($kind, host $host, mesh $mesh_ip)"
   # Lint what will ACTUALLY be written: once an environment is populated it is hand-edited in the UI,
   # so linting only the template would miss exactly the problems the UI can introduce.
   LINT_TARGET="template"; [ -n "$current" ] && LINT_TARGET="environment in Komodo"
@@ -275,11 +308,11 @@ while read -r repo_name; do
   # --force would overwrite.
   if [ "$SET_ON_PULL" = 1 ]; then
     if [ "$APPLY" != 1 ]; then
-      echo "    would set on_pull (environment untouched)"
+      echo "    would set $R_HOOK (environment untouched)"
     else
-      kapi write/UpdateRepo "$(jq -n --arg id "$repo_name" --arg g "$ON_PULL_COMMAND" \
-        '{id:$id, config:{on_pull:{path:"", command:$g, shell_mode:true}}}')" >/dev/null
-      info "on_pull set (environment untouched)."
+      kapi "$R_UPD" "$(jq -n --arg id "$repo_name" --arg h "$R_HOOK" --arg p "$hook_path" --arg g "$ON_PULL_COMMAND" \
+        '{id:$id, config:{($h):{path:$p, command:$g, shell_mode:true}}}')" >/dev/null
+      info "$R_HOOK set (environment untouched)."
     fi
     continue
   fi
@@ -302,16 +335,17 @@ while read -r repo_name; do
   fi
   [ $rc = 0 ] || die "refusing to --apply while the lint above fails"
 
-  kapi write/UpdateRepo "$(jq -n --arg id "$repo_name" --arg e "$rendered" --arg g "$ON_PULL_COMMAND" \
+  kapi "$R_UPD" "$(jq -n --arg id "$repo_name" --arg e "$rendered" --arg h "$R_HOOK" \
+    --arg p "$hook_path" --arg g "$ON_PULL_COMMAND" \
     '{id:$id, config:{environment:$e, env_file_path:".env", skip_secret_interp:false,
-                      on_pull:{path:"", command:$g, shell_mode:true}}}')" >/dev/null
-  info "environment written (+ on_pull)."
-done <<<"$(jq -r '.[].name' <<<"$REPOS")"
+                      ($h):{path:$p, command:$g, shell_mode:true}}}')" >/dev/null
+  info "environment written (+ $R_HOOK)."
+done <<<"$TARGETS"
 
 echo
 if [ "$APPLY" != 1 ]; then
   info "Dry run. Nothing was changed. Re-run with --apply."
 else
-  info "Done. The next Pull of each Repo writes /opt/SEGCORE/.env (0600) before update.sh runs."
+  info "Done. The next Pull (Repo) or Deploy (Stack) writes /opt/SEGCORE/.env (0600) before update.sh runs."
 fi
 exit $rc

@@ -41,15 +41,27 @@ jq -e 'type == "array"' >/dev/null 2>&1 <<<"${servers:-null}" || fail_keep_cache
 
 repos="$(kapi read/ListRepos 2>/dev/null || true)"
 jq -e 'type == "array"' >/dev/null 2>&1 <<<"${repos:-null}" || fail_keep_cache "ListRepos failed"
+stacks="$(kapi read/ListStacks 2>/dev/null || true)"
+jq -e 'type == "array"' >/dev/null 2>&1 <<<"${stacks:-null}" || fail_keep_cache "ListStacks failed"
 
-# server_id -> public_ip, from each deploy Repo's environment. Also records why a host has no
-# public IP, so a half-onboarded host is never mistaken for a clean one.
+# server_id -> public_ip, from each deploy resource's environment. A host is deployed either as a
+# Repo or as a Stack (the fleet is mid-migration; see the 2026-09-08 correction in docs/DESIGN.md),
+# and both spell `server_id` and `environment` identically -- so only the endpoint differs. Reading
+# only Repos would leave every migrated host with no role and no public IP, i.e. scanned against no
+# baseline at all, and the loop below would not even warn: it iterates what the list contains.
+# Also records why a host has no public IP, so a half-onboarded host is never mistaken for a clean
+# one. A name present as both types is read once, as the Stack -- the migration target.
 declare -A PUBIP=() ROLE=()
 incomplete='[]'
-while IFS= read -r repo_name; do
+while IFS=$'\t' read -r repo_name kind; do
   [ -n "$repo_name" ] || continue
-  repo="$(kapi read/GetRepo "$(jq -nc --arg r "$repo_name" '{repo:$r}')" 2>/dev/null || true)"
-  jq -e 'type == "object"' >/dev/null 2>&1 <<<"${repo:-null}" || { sec_warn "GetRepo $repo_name failed"; continue; }
+  case "$kind" in
+    repo)  arg=repo;  ep=read/GetRepo ;;
+    stack) arg=stack; ep=read/GetStack ;;
+    *) sec_warn "unknown deploy resource kind '$kind' for $repo_name"; continue ;;
+  esac
+  repo="$(kapi "$ep" "$(jq -nc --arg k "$arg" --arg r "$repo_name" '{($k):$r}')" 2>/dev/null || true)"
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"${repo:-null}" || { sec_warn "$ep $repo_name failed"; continue; }
   sid="$(jq -r '.config.server_id // ""' <<<"$repo")"
   [ -n "$sid" ] || continue
   ROLE["$sid"]="$APP_TAG"
@@ -59,9 +71,11 @@ while IFS= read -r repo_name; do
   if [[ "$ip" =~ $IPV4_RE ]]; then
     PUBIP["$sid"]="$ip"
   else
-    sec_warn "repo $repo_name: PUBLIC_BIND_IP unusable ('${ip:-empty}')"
+    sec_warn "$kind $repo_name: PUBLIC_BIND_IP unusable ('${ip:-empty}')"
   fi
-done < <(jq -r --arg t "$APP_TAG" '.[] | select(.name | startswith($t + "-")) | .name' <<<"$repos")
+done < <( { jq -r --arg t "$APP_TAG" '.[] | select(.name | startswith($t + "-")) | .name + "\tstack"' <<<"$stacks"
+            jq -r --arg t "$APP_TAG" '.[] | select(.name | startswith($t + "-")) | .name + "\trepo"'  <<<"$repos"; } \
+          | awk -F'\t' '!seen[$1]++')
 
 # Assemble. The manager is always the first target and is never discovered from Komodo.
 targets="$(jq -n \
