@@ -110,7 +110,7 @@ describe() {   # $1 = deployment name, $2 = description
 # The UI shows START and REDEPLOY on an exited one-shot, never "Deploy" — say the real button
 # names. Both work for the trigger; Start is lighter because it reuses the container instead of
 # recreating it. Verified 2026-09-07.
-DESC_TRIGGER='AUDITORIA DE SEGURANCA A PEDIDO. Carregue em START (ou Redeploy) para auditar este host agora - leva 5-10 min: lynis, CIS Docker, CVEs das imagens e portas a escuta. NAO altera nada no host, so le. O resultado aparece no Grafana, pasta "security", depois de o manager o recolher (timer diario, ou ja: scripts/secaudit.sh audit <host>). Este container so faz um touch num ficheiro: sem rede, sem privilegios, sem docker.sock.'
+DESC_TRIGGER='AUDITORIA DE SEGURANCA A PEDIDO. Carregue em START (ou Redeploy) para auditar este host agora - leva 5-10 min: lynis (hardening do SO), CIS Docker, portas a escuta e idade das imagens em uso. As vulnerabilidades das imagens NAO sao analisadas aqui - isso vive no CI da aplicacao (docs/CI-IMAGE-SCANNING.md). NAO altera nada no host, so le. O resultado aparece no Grafana, pasta "security", depois de o manager o recolher (timer diario, ou ja: scripts/secaudit.sh audit <host>). Este container so faz um touch num ficheiro: sem rede, sem privilegios, sem docker.sock.'
 DESC_COLLECT='Le o ultimo relatorio de auditoria deste host e devolve-o ao manager pelo log. Nao precisa de o usar: o manager recolhe por timer. START ou Redeploy releem agora. So faz cat de um ficheiro montado read-only; sem rede e sem privilegios.'
 
 courier_config() {   # $1 = server_id, $2 = role (collect|trigger)
