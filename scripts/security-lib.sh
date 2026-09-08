@@ -20,7 +20,7 @@ sec_die()  { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
 # Read one key from .env. It is a compose env file (KEY=value, values NOT shell-quoted, some
 # containing spaces and &), so it must NOT be sourced as shell — we parse the exact keys we need.
-# Same implementation as scripts/setup-deploy-procedure.sh; environment values win over .env.
+# Same implementation as scripts/setup-app-env.sh; environment values win over .env.
 env_get() {
   [ -f "$SEC_REPO_DIR/.env" ] || return 0
   sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$SEC_REPO_DIR/.env" | head -n1 \

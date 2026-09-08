@@ -449,7 +449,7 @@ dashboard only).
 ## Alerts
 
 `docker/vmalert/rules/security/security-alerts.yml`, every rule labelled `scope: secaudit`. **No rule
-carries `app: segcore`** — `segcore-silence-on.ts` silences on `app="segcore"` for 30 minutes on
+carries `app: segcore`** — the deploy silences on `app="segcore"` for the rebuild window on
 every deploy, which would blind the security alerts exactly when a new image lands. Deliberate; do
 not "fix" it for consistency.
 

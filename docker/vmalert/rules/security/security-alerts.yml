@@ -5,7 +5,7 @@
 #
 #  1. Every rule carries `scope: secaudit` and NONE carries `app: segcore`. The deploy Procedure
 #     silences Alertmanager on the matcher app="segcore" for 30 minutes on every deploy
-#     (docker/komodo/actions/segcore-silence-on.ts). Labelling these alerts app="segcore" would
+#     (the app's scripts/update.sh, via /maintenance/silence). Labelling these alerts app="segcore" would
 #     blind the security stream during exactly the window when a new image lands.
 #
 #  2. Every finding rule filters suppressed="0". A suppression in security/suppressions.toml does

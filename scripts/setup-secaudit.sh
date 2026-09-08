@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install (idempotent) the two zero-privilege courier Deployments per Komodo server, which are the
-# ONLY way the manager talks to the host bundle. Run on the MANAGER, like setup-deploy-procedure.sh.
+# ONLY way the manager talks to the host bundle. Run on the MANAGER, as the operator.
 #
 #   secaudit-collect-<server>   `cat` of /var/lib/secaudit/report.ndjson, harvested from the
 #                               container log. Mount is :ro — the manager can read the audit, never

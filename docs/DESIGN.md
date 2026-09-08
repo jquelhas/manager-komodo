@@ -889,13 +889,22 @@ antes de avançar para a seguinte. Não criar tudo de uma vez.
   > URL**: tem de ser feito à mão no host (ou recriando temporariamente o Repo a partir de
   > `var/komodo-resource-backups/`).
   >
-  > **O Procedure `deploy-segcore` tem de acompanhar, e é o passo que falta.** Faz `BatchPullRepo`
-  > com o padrão `segcore-*`; com o Repo e a Stack a corresponderem **ambos** ao padrão, o
-  > `update.sh` correria **duas vezes** no demo — dois backups de base de dados e ~30 min. A
-  > alteração necessária: estreitar o padrão dos repos para `segcore-host1` e acrescentar uma etapa
-  > `BatchDeployStack` com `segcore-*`. Enquanto o `host1` não migrar, o Procedure precisa das duas
-  > etapas. **Até isso estar feito, não correr o Procedure**, e o `segcore-demo` continua a ter o
-  > Repo como caminho de deploy activo.
+  > **Migração concluída a 2026-09-08:** os dois hosts são Stacks, não há Repos, e o Procedure
+  > `deploy-segcore` foi **eliminado** com as suas duas Actions em Deno e o instalador
+  > `scripts/setup-deploy-procedure.sh`. Existia para envolver o deploy num silence do
+  > Alertmanager; isso passou para o `scripts/update.sh` da aplicação, que cobre os três caminhos
+  > de deploy em vez de um só (ver `docs/INSTRUCTIONS.md`, §Alerting). O deploy é agora o botão
+  > *Deploy* da Stack, ou `BatchDeployStack` por padrão/tag.
+  >
+  > **Como apagar um Repo sem destruir a aplicação**, que é a armadilha desta migração: o
+  > `DeleteRepo` apaga o directório em `path`. Mudar o `path` para um caminho descartável com
+  > `write/UpdateRepo`, **ler de volta e assertar que mudou**, e só então apagar — o `DeleteRepo`
+  > vai atacar o caminho descartável. Verificado nos dois sentidos: no `segcore-demo` não o fiz e
+  > perdeu-se `/opt/SEGCORE` (árvore git, `.env` e o store ACME do Traefik; a base de dados estava
+  > num volume nomeado e nunca esteve em risco); no `segcore-host1` fiz e `/opt/SEGCORE` ficou
+  > intacto, confirmado por listagem. O erro é sempre `Permission denied (os error 13)` e a causa
+  > habitual não é o dono mas o modo 0555 que o git dá aos directórios de `.git/objects/`, que faz
+  > a remoção recursiva abortar a meio e deixar estado parcial.
 - **A validação do `.env` vive no `update.sh` do GIMSv2, não no `on_pull`** (feito 2026-08-23). As
   verificações — placeholders `[[NOME]]` por resolver, `CHANGE_ME`, `TENANT_CONFIG_KEY` vazia, e o
   ficheiro ser carregável por `source` — estão no topo do `scripts/update.sh` da app. O `on_pull` é

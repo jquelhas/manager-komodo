@@ -189,19 +189,37 @@ Expected: node present (`tag:segcore`), Server state `Ok`, `up=1` for backend/po
 
 ## 5. Deploy
 
-**Caminho recomendado — Procedure `deploy-segcore`** (silencia os alertas durante o rebuild, ver
-[§Alerting → Silences de manutenção](#silences-de-manutenção-no-deploy)). No Komodo UI: *Procedures
-→ `deploy-segcore` → Run*. Faz `silence-on → BatchPullRepo segcore-* → silence-off`, ou seja corre
-`./scripts/update.sh` em toda a frota `segcore-*` sem gerar e-mails de *backend down/up*. Instalar/
-atualizar uma vez com `scripts/setup-deploy-procedure.sh` (ver §Alerting).
+Komodo UI: *Stacks → `segcore-<host>` → **Deploy***. Corre `./scripts/update.sh` nesse host — sete
+passos, dos quais o [2/7] põe a aplicação em baixo e o [7/7] a levanta.
 
-Alternativas manuais (⚠️ **não silenciam** — geram os e-mails de down/up durante o rebuild):
-- **One host** — Komodo UI: *Repos → `segcore-<host>` → Pull*. Runs `./scripts/update.sh` on the host
-  (backup → git pull → build → up). **Logs:** the full output is in the Update record when it finishes
-  (toggle **Poll** on the log tab for near-realtime); for a live view, `update.sh` also tees to
-  `/opt/SEGCORE/logs/update-<ts>.log` on the host — `tail -f /opt/SEGCORE/logs/update-*.log`.
-- **All / several** — `BatchPullRepo` by name pattern `segcore-*` or by the `segcore` tag.
-  ⚠️ Batch **executes** (it is not a dry-run).
+O botão não é o que o nome sugere: **não é "levantar a stack", é um update completo da aplicação**,
+com backup da base de dados, `compose down`, rebuild das imagens, migrações e manutenção. A ordem
+das etapas do Komodo é
+
+```
+Write Environment File → Validate Files → Pre Deploy (update.sh) → Compose Config → Compose Up
+```
+
+logo o `.env` é reescrito a partir do `environment` da Stack **antes** de o `update.sh` correr, e o
+`Compose Up` final converge sobre o que o passo [7/7] já levantou (ver a nota sobre a redundância
+aceite em `docs/DESIGN.md`).
+
+**Logs:** em tempo real no host, que é a melhor vista —
+
+```bash
+tail -F "$(ls -1t /opt/SEGCORE/logs/update-*.log | head -1)"    # depois de carregar em Deploy
+```
+
+`-F` e não `-f`, e não use um glob antes do deploy: o glob resolve-se uma vez e não apanha o
+ficheiro novo. Mantém os 20 mais recentes. Na UI, o Update guarda o output por etapa (com **Poll**
+para acompanhar), e é onde se vê *em que etapa* falhou.
+
+**Alertas durante o deploy:** o próprio `update.sh` abre e fecha um silence no Alertmanager — ver
+[§Alerting → Silences de manutenção](#silences-de-manutenção-no-deploy). Não há nada a fazer no
+momento do deploy; um host sem isso configurado gera e-mails de *backend down/up* em vez de falhar.
+
+**Vários hosts:** `BatchDeployStack` por padrão de nome (`segcore-*`) ou pela tag `segcore`.
+⚠️ Batch **executa**, não é dry-run.
 
 ## Notes & gotchas
 
@@ -216,7 +234,7 @@ Alternativas manuais (⚠️ **não silenciam** — geram os e-mails de down/up 
 ## Internal TLS expired (`*.apps.internal`)
 
 Symptom: every internal service stops answering over HTTPS at once, and anything using the step-ca
-root as a CA bundle fails — including `scripts/setup-app-env.sh` and `scripts/setup-deploy-procedure.sh`:
+root as a CA bundle fails — including `scripts/setup-app-env.sh`:
 
 ```
 curl: (60) SSL certificate OpenSSL verify result: certificate has expired (10)
@@ -377,96 +395,73 @@ feed it, so all alerts arrive by e-mail with dedup/grouping.
 
 Um deploy reconstrói os containers, por isso o backend fica `up=0` durante o rebuild e a regra
 vmalert `SegcoreBackendDown` dispararia (e-mail *backend down* + depois *backend up* ao resolver).
-Para não alertar num down **planeado**, o deploy é feito pela Procedure **`deploy-segcore`**, que
-envolve o `BatchPullRepo` com duas Actions que abrem e fecham um **silence** no Alertmanager:
+Cerca de quatro e-mails por deploy. O problema não é o incómodo: **e-mails sobre quedas planeadas
+ensinam a ignorar e-mails sobre quedas.**
 
-- `segcore-silence-on` — cria um silence (matcher `app="segcore"`) com TTL de 30 min. É
-  **time-boxed**: auto-expira mesmo que o deploy falhe/pendure, portanto nunca fica um silence preso.
-- `segcore-silence-off` — apaga o silence no fim (procura-o pelo marcador `createdBy=komodo` +
-  `comment="segcore deploy"`, sem precisar de passar o id entre stages).
-
-As Actions correm no runtime Deno do Komodo Core, que está na mesma rede Docker que o Alertmanager,
-logo falam com `http://alertmanager:9093/api/v2/silences` diretamente (sem mesh, sem token). O
-código-fonte está em [`docker/komodo/actions/`](../docker/komodo/actions/).
-
-**Instalar / atualizar (idempotente):**
-```bash
-./scripts/setup-deploy-procedure.sh   # usa KOMODO_API_KEY/SECRET do .env; KOMODO_URL default https://komodo.apps.internal
-```
-Cria/atualiza as duas Actions e a Procedure `deploy-segcore`. Re-correr após editar os `.ts`.
-
-⚠️ O silêncio só se aplica quando o deploy passa pela Procedure. Um *Repo Pull* direto (ou
-`update.sh` à mão no host) **não** silencia. Fora de uma janela de deploy, `SegcoreBackendDown`
-continua a alertar normalmente ao fim de 2 min.
-
-#### O silence pedido pelo próprio host (2026-09-08)
-
-O aviso acima é a limitação de fundo do mecanismo das Actions: o silence é propriedade do *caminho*
-usado para disparar o deploy, e há três caminhos (Procedure, botão *Deploy*/*Pull* na UI, e
-`./scripts/update.sh` por SSH). Só um deles silencia.
-
-A correcção é o `update.sh` pedir o silence ele próprio, e assim os três caminhos ficam cobertos
-pelo mesmo mecanismo. **O lado do manager está feito e testado; falta o lado da aplicação** — ver
-`docs/APP-MAINTENANCE-SILENCE.md`, que é o documento a entregar à equipa de desenvolvimento.
+O `scripts/update.sh` da aplicação pede o silence ao control plane no início e levanta-o no fim por
+`trap` — logo é levantado mesmo que o script morra a meio. Fica coberto **qualquer** caminho de
+deploy: o botão da UI, um batch, ou o script corrido à mão por SSH.
 
 ```
-host (update.sh)  ──mesh, 443──>  apps.internal/maintenance/silence/{start,end}
-                                        └─> provisioning ──> alertmanager:9093
+host (update.sh) ──mesh 443──> apps.internal/maintenance/silence/<token>/{start,end}
+                                    └─> provisioning ──> alertmanager:9093
 ```
 
-Só pela mesh, nunca pela internet: o `websecure-internal` do Traefik está publicado em
-`100.64.0.1:443` e mais nada, e o caminho **não** tem o prefixo `/provisioning`, que é o único que
-o entrypoint público encaminha. São duas razões independentes, de propósito.
+Só pela mesh, nunca pela internet, por duas razões independentes: o `websecure-internal` do Traefik
+está publicado em `100.64.0.1:443` e mais nada, e o caminho **não** tem o prefixo `/provisioning`,
+que é o único que o entrypoint público encaminha. Uma regra estreita na `acl.hujson`
+(`tag:segcore → tag:manager:443`) abre o caminho, e por isso `security/baseline/ports.toml` tem 443
+em `[defaults.manager.mesh]`.
 
-**A identidade é um token por host, no caminho da URL.** O endpoint não aceita matchers nem o campo
-`host` (responde 400 se vier), tem tecto de 45 min no servidor, e o `host` silenciado é derivado do
-token. Um host comprometido silencia-se a si próprio durante 45 minutos e mais nada.
+**A identidade é um token por host, no caminho da URL.** `HMAC-SHA256(MAINTENANCE_HMAC_KEY, <host>)`
+truncado a 32 hex; o manager não guarda tokens, re-deriva e compara em tempo constante. O endpoint
+não aceita matchers nem o campo `host` (400 se vier), tem tecto de 45 min no servidor, e o `end` é
+idempotente. Um host comprometido silencia-se a si próprio durante 45 minutos e mais nada.
 
-> **Porque não é o IP de mesh, que dispensaria segredo nenhum.** Era o desenho original, e **não
-> funciona** — medido a 2026-09-08, não presumido: um pedido de um app host chega ao Traefik com
+> **Porque não é o IP de mesh, que dispensaria segredo nenhum.** Era o desenho original e **não
+> funciona** — medido a 2026-09-08: um pedido de um app host chega ao Traefik com
 > `X-Forwarded-For: 172.18.0.1`, a gateway da bridge Docker do manager, porque o *userland proxy* do
 > dockerd (`docker-proxy`, à escuta em `100.64.0.1:443`) termina a ligação e abre outra para o
-> container. **Todos os hosts ficam indistinguíveis** à camada de aplicação, logo uma verificação
-> por endereço não autentica ninguém. Isto vale para qualquer coisa no manager que queira o IP real
-> do cliente; corrigi-lo de raiz exigiria `userland-proxy: false` no `daemon.json` e reiniciar o
-> dockerd, o que reinicia todo o control plane — decisão separada, não feita.
+> container. Todos os hosts ficam indistinguíveis, logo uma verificação por endereço não autentica
+> ninguém. Vale para qualquer coisa no manager que queira o IP real do cliente.
 
-O token é `HMAC-SHA256(MAINTENANCE_HMAC_KEY, <host>)` truncado a 32 hex. O manager **não guarda
-tokens**: re-deriva e compara em tempo constante. Está no caminho da URL, e não num header, por uma
-razão prática — o `update.sh` da app constrói o pedido como `"${KOMODO_ALERT_SILENCE_URL}/start"`,
-logo o segredo viaja de graça e o script da aplicação não muda uma linha.
-
-É um **valor por host**, portanto vai no `environment` daquele host na UI do Komodo e nunca num
-`APPVAR_` (esses são fleet-wide, que é exactamente o que um segredo por host não pode ser):
+**Configurar um host** (o `onboard-host.sh` faz o primeiro passo num host novo):
 
 ```bash
-scripts/setup-maintenance-tokens.sh              # imprime a URL de cada host
-scripts/setup-maintenance-tokens.sh --host segcore-demo
+# 1. no host: confiar no step-ca, senão o curl a apps.internal falha na validação do certificado
+sudo curl -fsSL -o /usr/local/share/ca-certificates/manager-step-ca.crt \
+     https://<PUBLIC_DOMAIN>/provisioning/step-ca-root.crt && sudo update-ca-certificates
+
+# 2. no manager: imprimir a URL daquele host e colá-la no `environment` dele na UI do Komodo
+scripts/setup-maintenance-tokens.sh --host segcore-<host>
 ```
+
+É um **valor por host**, portanto nunca um `APPVAR_` (esses são fleet-wide, que é exactamente o que
+um segredo por host não pode ser). Vazio ou ausente = função desligada: o `update.sh` salta o
+silence e continua, nunca falha — um host tem de continuar actualizável sem control plane nenhum.
+
+Para desligar em incidente, sem tocar no router nem no código: `MAINTENANCE_API=off` no `.env` do
+manager + `docker compose up -d --force-recreate provisioning` (passa a responder 503).
 
 Rodar a `MAINTENANCE_HMAC_KEY` invalida todas as URLs de uma vez: re-correr o script e actualizar
 cada host.
 
-Requer duas coisas em cada host, ambas tratadas pelo `bootstrap/onboard-host.sh` num host novo:
+**Verificar do host**, sem esperar por um deploy:
 
-- **o root do step-ca no trust store** (`/usr/local/share/ca-certificates/manager-step-ca.crt`),
-  buscado a `${PUBLIC_DOMAIN}/provisioning/step-ca-root.crt`. Sem ele o `curl` a `apps.internal`
-  falha na validação do certificado. Nos hosts já onboarded tem de ser instalado à mão:
-  ```bash
-  sudo curl -fsSL -o /usr/local/share/ca-certificates/manager-step-ca.crt \
-       https://<PUBLIC_DOMAIN>/provisioning/step-ca-root.crt && sudo update-ca-certificates
-  ```
-- **a variável no `.env`**, `KOMODO_ALERT_SILENCE_URL`, com a URL **daquele** host incluindo o
-  token, colada no `environment` dele na UI do Komodo. Vazia ou ausente = função desligada, e o
-  `update.sh` salta o silence sem falhar.
+```bash
+. /opt/SEGCORE/.env 2>/dev/null
+curl -fsS -X POST -H 'Content-Type: application/json' -d '{"minutes":5}' "$KOMODO_ALERT_SILENCE_URL/start"
+curl -fsS -X POST -H 'Content-Type: application/json' -d '{}'            "$KOMODO_ALERT_SILENCE_URL/end"
+```
 
-Para desligar em incidente, sem tocar no router nem no código: `MAINTENANCE_API=off` no `.env` do
-manager + `docker compose up -d --force-recreate provisioning`. O endpoint passa a responder 503.
+A resposta nomeia o host a que o control plane atribuiu o pedido. Se não for este host, pare e
+reporte.
 
-Quando o `update.sh` passar a fazer isto, as duas Actions em Deno e o estágio de silence da
-Procedure deixam de ser necessários — a Procedure fica só `BatchPullRepo` + `BatchDeployStack`. Os
-dois mecanismos coexistem sem interferir: usam marcadores `createdBy` distintos (`komodo` e
-`maintenance-api`), logo nenhum expira os silences do outro.
+> **Histórico (2026-09-08).** Isto era feito por uma Procedure `deploy-segcore` que envolvia o
+> deploy em duas Actions em Deno (`segcore-silence-{on,off}`). Foi removida — Procedure, Actions e
+> `scripts/setup-deploy-procedure.sh` — porque o silence era propriedade do **caminho** usado para
+> disparar o deploy, e havia três caminhos: só um silenciava. No `update.sh` ficam os três
+> cobertos, e o mecanismo desaparece do control plane.
 
 ## Offboard (remove a host)
 
