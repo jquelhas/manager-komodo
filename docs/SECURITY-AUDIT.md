@@ -40,6 +40,15 @@ Without the timer, nothing is broken — it just means the scans only run when y
 
 ## Enrolling a host (phase 2)
 
+**The bundle is served mesh-only.** `scripts/secaudit.sh bundle --serve` writes it to
+`https://apps.internal/artifacts/secaudit-bundle.sh` — no one-time uuid, no TTL, and the same
+command on every host. It used the public endpoint with a capability link until 2026-09-09; both
+reasons for that are gone (the ACL now opens 443 for the maintenance-silence endpoint, so
+`/artifacts` needs no new port, and hosts trust the step-ca root since `onboard-host.sh` installs
+it). The public endpoint is the cold start, for a host not yet on the mesh; secaudit is installed
+after onboarding, so that host always is.
+
+
 The manager has no SSH to the app hosts, and nothing on them listens for it. Installation is
 carried by an operator; collection then goes over the Komodo link that already exists.
 
