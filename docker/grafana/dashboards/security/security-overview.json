@@ -1,7 +1,7 @@
 {
   "uid": "security-overview",
-  "title": "Segurança — postura da frota",
-  "description": "Auditor de segurança (secaudit). Fase 1: sensor rápido de exposição + drift do checklist interno. Ver docs/plan/secaudit.md.",
+  "title": "Seguran\u00e7a \u2014 postura da frota",
+  "description": "Auditor de seguran\u00e7a (secaudit). Fase 1: sensor r\u00e1pido de exposi\u00e7\u00e3o + drift do checklist interno. Ver docs/plan/secaudit.md.",
   "tags": [
     "security",
     "secaudit",
@@ -54,13 +54,13 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**Três perspectivas, três coisas diferentes.** `local` = o que está *bound* numa morada encaminhável. Esta frota **não tem firewall no host** (a externa é a autoritária e é invisível de dentro), por isso `local` é **detecção de drift**, não medição de exposição. `public` = o que a firewall externa deixa passar (nmap de fora, fase 3). `mesh` = o que a ACL do Headscale permite (fase 3). Confundi-las é a forma mais fácil de criar falsa confiança.\n\n**Um scan velho não é um scan limpo.** Ver primeiro a tabela *Frescura dos scans*: se algo estiver vermelho, os achados abaixo são antigos e não se pode confiar no verde.\n\n**Supressões não escondem nada.** Um achado suprimido continua aqui com `suppressed=1`; só os alertas o ignoram. A política vive em git: `security/baseline/ports.toml` (o que é esperado) e `security/suppressions.toml` (aceite, com `expires` obrigatório). É avaliada **no scrape**, por isso editar qualquer uma faz efeito em ~60s, sem re-scan.\n\n**Correr a pedido:** `scripts/secaudit.sh run all` · **estado:** `scripts/secaudit.sh status`"
+        "content": "**Tr\u00eas perspectivas, tr\u00eas coisas diferentes.** `local` = o que est\u00e1 *bound* numa morada encaminh\u00e1vel. Esta frota **n\u00e3o tem firewall no host** (a externa \u00e9 a autorit\u00e1ria e \u00e9 invis\u00edvel de dentro), por isso `local` \u00e9 **detec\u00e7\u00e3o de drift**, n\u00e3o medi\u00e7\u00e3o de exposi\u00e7\u00e3o. `public` = o que a firewall externa deixa passar (nmap de fora, fase 3). `mesh` = o que a ACL do Headscale permite (fase 3). Confundi-las \u00e9 a forma mais f\u00e1cil de criar falsa confian\u00e7a.\n\n**Um scan velho n\u00e3o \u00e9 um scan limpo.** Ver primeiro a tabela *Frescura dos scans*: se algo estiver vermelho, os achados abaixo s\u00e3o antigos e n\u00e3o se pode confiar no verde.\n\n**Supress\u00f5es n\u00e3o escondem nada.** Um achado suprimido continua aqui com `suppressed=1`; s\u00f3 os alertas o ignoram. A pol\u00edtica vive em git: `security/baseline/ports.toml` (o que \u00e9 esperado) e `security/suppressions.toml` (aceite, com `expires` obrigat\u00f3rio). \u00c9 avaliada **no scrape**, por isso editar qualquer uma faz efeito em ~60s, sem re-scan.\n\n**Correr a pedido:** `scripts/secaudit.sh run all` \u00b7 **estado:** `scripts/secaudit.sh status`"
       }
     },
     {
       "type": "stat",
       "title": "Portas expostas fora da baseline",
-      "description": "Serviços bound numa morada encaminhável e ausentes da baseline. O achado clássico é um `-p 5432:5432` acidental.",
+      "description": "Servi\u00e7os bound numa morada encaminh\u00e1vel e ausentes da baseline. O achado cl\u00e1ssico \u00e9 um `-p 5432:5432` acidental.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -119,8 +119,8 @@
     },
     {
       "type": "stat",
-      "title": "Portas obrigatórias em falta",
-      "description": "Uma porta marcada required_tcp na baseline que não foi observada: ou o serviço está em baixo, ou deixou de ser publicado.",
+      "title": "Portas obrigat\u00f3rias em falta",
+      "description": "Uma porta marcada required_tcp na baseline que n\u00e3o foi observada: ou o servi\u00e7o est\u00e1 em baixo, ou deixou de ser publicado.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -180,7 +180,7 @@
     {
       "type": "stat",
       "title": "Nomes internos mal configurados",
-      "description": "missing=router é o modo de falha de 2026-08-23: uma entrada em extra_hosts do step-ca sem router nunca completa TLS-ALPN-01 e bloqueia TODA a fila de renovação interna.",
+      "description": "missing=router \u00e9 o modo de falha de 2026-08-23: uma entrada em extra_hosts do step-ca sem router nunca completa TLS-ALPN-01 e bloqueia TODA a fila de renova\u00e7\u00e3o interna.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -240,7 +240,7 @@
     {
       "type": "stat",
       "title": "Scans desactualizados",
-      "description": "Scans sem execução bem-sucedida dentro do seu budget. Se isto não for zero, o resto da página está velho.",
+      "description": "Scans sem execu\u00e7\u00e3o bem-sucedida dentro do seu budget. Se isto n\u00e3o for zero, o resto da p\u00e1gina est\u00e1 velho.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -299,8 +299,8 @@
     },
     {
       "type": "stat",
-      "title": "Supressões inválidas",
-      "description": "Entradas que NÃO suprimem nada (sem expires, expiradas, sem owner, ou além do horizonte). Alguém provavelmente acredita ter silenciado um achado e não silenciou.",
+      "title": "Supress\u00f5es inv\u00e1lidas",
+      "description": "Entradas que N\u00c3O suprimem nada (sem expires, expiradas, sem owner, ou al\u00e9m do horizonte). Algu\u00e9m provavelmente acredita ter silenciado um achado e n\u00e3o silenciou.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -360,7 +360,7 @@
     {
       "type": "stat",
       "title": "Achados suprimidos",
-      "description": "Riscos aceites, com data de validade. Não estão escondidos — ver a tabela de supressões no fim.",
+      "description": "Riscos aceites, com data de validade. N\u00e3o est\u00e3o escondidos \u2014 ver a tabela de supress\u00f5es no fim.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -419,7 +419,7 @@
     },
     {
       "type": "row",
-      "title": "Frescura — ler isto primeiro",
+      "title": "Frescura \u2014 ler isto primeiro",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -432,7 +432,7 @@
     {
       "type": "table",
       "title": "Frescura dos scans",
-      "description": "Idade vs budget por scan. O budget viaja como métrica (secaudit_scan_max_age_seconds), por isso esta tabela e as regras de alerta nunca podem discordar sobre o que é 'velho'.",
+      "description": "Idade vs budget por scan. O budget viaja como m\u00e9trica (secaudit_scan_max_age_seconds), por isso esta tabela e as regras de alerta nunca podem discordar sobre o que \u00e9 'velho'.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -486,7 +486,7 @@
             },
             "renameByName": {
               "host 1": "host",
-              "Value #A": "último sucesso",
+              "Value #A": "\u00faltimo sucesso",
               "Value #B": "idade (s)",
               "Value #C": "budget (s)",
               "Value #D": "ok"
@@ -543,7 +543,7 @@
     },
     {
       "type": "row",
-      "title": "Perímetro",
+      "title": "Per\u00edmetro",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -556,7 +556,7 @@
     {
       "type": "table",
       "title": "Portas expostas vs baseline (perspectiva local)",
-      "description": "Cada porta bound numa morada encaminhável. A coluna 'fora da baseline' a 1 é o achado; scope distingue wildcard (0.0.0.0) de public (o IP público do host).",
+      "description": "Cada porta bound numa morada encaminh\u00e1vel. A coluna 'fora da baseline' a 1 \u00e9 o achado; scope distingue wildcard (0.0.0.0) de public (o IP p\u00fablico do host).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -639,7 +639,7 @@
     {
       "type": "table",
       "title": "Listeners no manager",
-      "description": "Tabela de sockets do manager. `process` vem vazio para sockets de root porque o sensor corre como ubuntu — o bundle nativo da fase 2 corre como root e preenche-o.",
+      "description": "Tabela de sockets do manager. `process` vem vazio para sockets de root porque o sensor corre como ubuntu \u2014 o bundle nativo da fase 2 corre como root e preenche-o.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -700,7 +700,7 @@
     {
       "type": "timeseries",
       "title": "Portas expostas fora da baseline, ao longo do tempo",
-      "description": "Para ver QUANDO o drift apareceu, que é normalmente o que identifica a alteração que o causou.",
+      "description": "Para ver QUANDO o drift apareceu, que \u00e9 normalmente o que identifica a altera\u00e7\u00e3o que o causou.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -748,7 +748,7 @@
     {
       "type": "timeseries",
       "title": "Portas publicadas por container, por host",
-      "description": "Vem da API do Komodo (read/ListDockerContainers), que já reporta o IP de bind de cada porta publicada — sem agente nos hosts.",
+      "description": "Vem da API do Komodo (read/ListDockerContainers), que j\u00e1 reporta o IP de bind de cada porta publicada \u2014 sem agente nos hosts.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -788,14 +788,14 @@
             "uid": "prometheus"
           },
           "expr": "count by (host, scope) (secaudit_docker_published_port)",
-          "legendFormat": "{{host}} · {{scope}}",
+          "legendFormat": "{{host}} \u00b7 {{scope}}",
           "refId": "A"
         }
       ]
     },
     {
       "type": "row",
-      "title": "Configuração interna e higiene",
+      "title": "Configura\u00e7\u00e3o interna e higiene",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -807,8 +807,8 @@
     },
     {
       "type": "table",
-      "title": "Drift do checklist de serviço interno",
-      "description": "missing=dns -> falta em dns.extra_records (docker/headscale/config.yaml). missing=stepca_hosts -> falta nos extra_hosts do step-ca. missing=router -> entrada no step-ca SEM router: nunca completa TLS-ALPN-01 e bloqueia a fila de renovação toda.",
+      "title": "Drift do checklist de servi\u00e7o interno",
+      "description": "missing=dns -> falta em dns.extra_records (docker/headscale/config.yaml). missing=stepca_hosts -> falta nos extra_hosts do step-ca. missing=router -> entrada no step-ca SEM router: nunca completa TLS-ALPN-01 e bloqueia a fila de renova\u00e7\u00e3o toda.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -867,8 +867,8 @@
     },
     {
       "type": "table",
-      "title": "Supressões",
-      "description": "A fila de revisão, e a razão pela qual as supressões vivem em git. `stale`=1 significa que já não corresponde a nenhum achado: apagar. Um alerta avisa 7 dias antes de expirar.",
+      "title": "Supress\u00f5es",
+      "description": "A fila de revis\u00e3o, e a raz\u00e3o pela qual as supress\u00f5es vivem em git. `stale`=1 significa que j\u00e1 n\u00e3o corresponde a nenhum achado: apagar. Um alerta avisa 7 dias antes de expirar.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -961,8 +961,8 @@
     },
     {
       "type": "table",
-      "title": "Alertas de segurança activos",
-      "description": "O que está a disparar agora. Nenhuma destas regras leva app=\"segcore\", para o silence de 30 minutos de cada deploy não as cegar.",
+      "title": "Alertas de seguran\u00e7a activos",
+      "description": "O que est\u00e1 a disparar agora. Nenhuma destas regras leva app=\"segcore\", para o silence de 30 minutos de cada deploy n\u00e3o as cegar.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1022,7 +1022,7 @@
     },
     {
       "type": "row",
-      "title": "Hosts — auditoria no sistema operativo",
+      "title": "Hosts \u2014 auditoria no sistema operativo",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1035,7 +1035,7 @@
     {
       "type": "stat",
       "title": "Hosts inscritos",
-      "description": "Máquinas com o bundle instalado e a reportar. Um host NÃO inscrito é uma decisão deliberada e nunca alerta — a frota é inscrita uma máquina de cada vez.",
+      "description": "M\u00e1quinas com o bundle instalado e a reportar. Um host N\u00c3O inscrito \u00e9 uma decis\u00e3o deliberada e nunca alerta \u2014 a frota \u00e9 inscrita uma m\u00e1quina de cada vez.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1094,8 +1094,8 @@
     },
     {
       "type": "stat",
-      "title": "Relatórios parciais",
-      "description": "Execuções interrompidas antes do fim. Os achados estão incompletos — normalmente o TimeoutStartSec numa máquina lenta.",
+      "title": "Relat\u00f3rios parciais",
+      "description": "Execu\u00e7\u00f5es interrompidas antes do fim. Os achados est\u00e3o incompletos \u2014 normalmente o TimeoutStartSec numa m\u00e1quina lenta.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1154,8 +1154,8 @@
     },
     {
       "type": "stat",
-      "title": "Pacotes de SO vulneráveis",
-      "description": "Do lynis. O auditor nunca corre apt — actualizar é decisão do operador.",
+      "title": "Pacotes de SO vulner\u00e1veis",
+      "description": "Do lynis. O auditor nunca corre apt \u2014 actualizar \u00e9 decis\u00e3o do operador.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1215,7 +1215,7 @@
     {
       "type": "stat",
       "title": "Passos de scanner a falhar",
-      "description": "Uma ferramenta falhou; as outras correram na mesma. É uma lacuna de cobertura, não uma execução perdida.",
+      "description": "Uma ferramenta falhou; as outras correram na mesma. \u00c9 uma lacuna de cobertura, n\u00e3o uma execu\u00e7\u00e3o perdida.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1274,8 +1274,8 @@
     },
     {
       "type": "stat",
-      "title": "Índice lynis mais baixo",
-      "description": "Tendência apenas, nunca alerta. O que alerta é a regressão acima do budget commitado.",
+      "title": "\u00cdndice lynis mais baixo",
+      "description": "Tend\u00eancia apenas, nunca alerta. O que alerta \u00e9 a regress\u00e3o acima do budget commitado.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1339,7 +1339,7 @@
     {
       "type": "table",
       "title": "Cobertura por host",
-      "description": "Inscrito, idade do relatório e se ficou completo. 'Não inscrito' é estado deliberado, não falha.",
+      "description": "Inscrito, idade do relat\u00f3rio e se ficou completo. 'N\u00e3o inscrito' \u00e9 estado deliberado, n\u00e3o falha.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1430,8 +1430,8 @@
     },
     {
       "type": "table",
-      "title": "Cross-scan do perímetro",
-      "description": "A única medição da allowlist da firewall externa e da negação app-host -> manager da ACL. expected=0 é o achado; num alvo _mesh significa regressão da ACL, que se corrige no acl.hujson e nunca na baseline.",
+      "title": "Cross-scan do per\u00edmetro",
+      "description": "A \u00fanica medi\u00e7\u00e3o da allowlist da firewall externa e da nega\u00e7\u00e3o app-host -> manager da ACL. expected=0 \u00e9 o achado; num alvo _mesh significa regress\u00e3o da ACL, que se corrige no acl.hujson e nunca na baseline.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1488,7 +1488,7 @@
     {
       "type": "table",
       "title": "Hardening: achados acima do budget",
-      "description": "O ratchet. Ambos os scanners reportam dezenas de coisas que ninguém vai corrigir num VPS, por isso o alerta é sobre REGRESSÃO acima do budget commitado em security/baseline/bench.toml — nunca sobre a contagem absoluta.",
+      "description": "O ratchet. Ambos os scanners reportam dezenas de coisas que ningu\u00e9m vai corrigir num VPS, por isso o alerta \u00e9 sobre REGRESS\u00c3O acima do budget commitado em security/baseline/bench.toml \u2014 nunca sobre a contagem absoluta.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1535,7 +1535,7 @@
             "renameByName": {
               "Value #A": "lynis acima",
               "Value #B": "CIS acima",
-              "Value #C": "índice lynis"
+              "Value #C": "\u00edndice lynis"
             }
           }
         }
@@ -1578,12 +1578,12 @@
     },
     {
       "type": "table",
-      "title": "Idade das imagens em produção",
+      "title": "Idade das imagens em produ\u00e7\u00e3o",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Vem dos metadados que o Komodo já reporta — sem scanner, sem base de dados, sem nada instalado. Referências fixadas por digest são excluídas: não podem ser refrescadas sem mudar o pin.",
+      "description": "Vem dos metadados que o Komodo j\u00e1 reporta \u2014 sem scanner, sem base de dados, sem nada instalado. Refer\u00eancias fixadas por digest s\u00e3o exclu\u00eddas: n\u00e3o podem ser refrescadas sem mudar o pin.",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -1681,6 +1681,265 @@
           "instant": true,
           "format": "table",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Achados em detalhe \u2014 o que est\u00e1 de facto aberto ou por corrigir",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 75
+      },
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Matriz: AVISOS por sec\u00e7\u00e3o e host",
+      "description": "Avisos do lynis por sec\u00e7\u00e3o (linhas) e host (colunas). S\u00e3o os graves; vazio \u00e9 bom.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 76
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true,
+            "cellOptions": {
+              "type": "color-background"
+            }
+          },
+          "color": {
+            "mode": "continuous-BlYlRd"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (section, host) (secaudit_lynis_findings{severity=\"warning\",suppressed=\"0\"})"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "rowField": "section",
+            "columnField": "host",
+            "valueField": "Value"
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Matriz: sugest\u00f5es por sec\u00e7\u00e3o e host",
+      "description": "A cauda longa. Serve para comparar hosts e ver tend\u00eancia, n\u00e3o para agir item a item.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 76
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true,
+            "cellOptions": {
+              "type": "color-background"
+            }
+          },
+          "color": {
+            "mode": "continuous-BlYlRd"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (section, host) (secaudit_lynis_findings{severity=\"suggestion\",suppressed=\"0\"})"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "rowField": "section",
+            "columnField": "host",
+            "valueField": "Value"
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Achados do sistema operativo (lynis)",
+      "description": "Cada achado, com o texto. Filtr\u00e1vel por host e severidade \u2014 \u00e9 a lista que as contagens escondiam.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "severity",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_lynis_finding{suppressed=\"0\"}"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "suppressed": true
+            },
+            "indexByName": {
+              "severity": 0,
+              "host": 1,
+              "section": 2,
+              "test_id": 3,
+              "detail": 4
+            },
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Verifica\u00e7\u00f5es CIS Docker falhadas (docker-bench)",
+      "description": "Cada verifica\u00e7\u00e3o falhada, por host. As sec\u00e7\u00f5es 1 e 2 s\u00e3o o daemon; 4 e 5 s\u00e3o imagens e containers.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "host",
+            "desc": true
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_bench_failed{suppressed=\"0\"}"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "suppressed": true
+            },
+            "indexByName": {
+              "host": 0,
+              "section": 1,
+              "id": 2,
+              "desc": 3
+            },
+            "renameByName": {}
+          }
         }
       ]
     }

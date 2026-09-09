@@ -1117,9 +1117,14 @@ def security_metrics_text():
             key = f"{r.get('test_id', '')}/{r.get('detail', '')}"
             sup, _e = _sec_suppressed(valid_sup, used_sup, "lynis", host, key)
             sl = "1" if sup else "0"
+            # `detail` is an empty STRING (not null) on most lynis records and the text is in
+            # `desc`, so `r.get("detail", "")` alone renders a table of blank rows — which is
+            # exactly what the dashboard was showing for the two warnings on segcore-host1. Same
+            # trap that `secaudit.sh show lynis` documents.
+            text = (r.get("detail") or "").strip() or (r.get("desc") or "").strip()
             add("secaudit_lynis_finding",
                 lbl(host=host, test_id=r.get("test_id", ""), section=section,
-                    severity=sev, detail=r.get("detail", "")[:60], suppressed=sl), 1)
+                    severity=sev, detail=text[:80], suppressed=sl), 1)
             lyn_counts[(section, sev, sl)] = lyn_counts.get((section, sev, sl), 0) + 1
         # GEN-0010 is "this release is end-of-life". Emitted as its own metric, outside the budget:
         # an unsupported OS is not a quantity to stay under, and no host should be able to carry it
