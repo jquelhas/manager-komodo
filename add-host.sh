@@ -23,7 +23,13 @@ TTL="5m"
 HOSTNAME_DEFAULT=""
 LOGIN_SERVER="https://komodo.segcore.eu"
 CORE_PUBKEY="MCowBQYDK2VuAyEAq4h7qO1p9pLMSxUgADHXY8IYtUnhcTwpLUyiNiuT2y8="
-PERIPHERY_VERSION="v2.2.0"
+# Deliberately EMPTY, and it must stay empty. bootstrap/onboard-host.sh carries the pinned
+# default (PERIPHERY_VERSION="${PERIPHERY_VERSION:-vX.Y.Z}") and the preamble below only exports
+# this when --periphery-version is passed explicitly. Having a default here too meant this file's
+# copy won -- the `:-` in onboard-host.sh never applied -- and on 2026-09-09 a freshly onboarded
+# host came up with periphery v2.2.0 against a Core on 2.3.2, because this pin had been left
+# behind when the other was bumped. One pin, one place to bump.
+PERIPHERY_VERSION=""
 STORE="${REPO_DIR}/provisioning/store"
 
 c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
@@ -83,7 +89,7 @@ TMP="$(mktemp -d "${STORE}/.tmp.XXXXXX")"
   echo "export KOMODO_CORE_PUBKEY='${CORE_PUBKEY}'"
   echo "export KOMODO_ROLE='${ROLE}'"
   [ -n "$HOSTNAME_DEFAULT" ] && echo "export KOMODO_HOSTNAME_DEFAULT='${HOSTNAME_DEFAULT}'"
-  echo "export PERIPHERY_VERSION='${PERIPHERY_VERSION}'"
+  [ -n "$PERIPHERY_VERSION" ] && echo "export PERIPHERY_VERSION='${PERIPHERY_VERSION}'"
   echo "export KOMODO_COMPLETE_URL='${COMPLETE_URL}'"
   echo '# ---- bootstrap/onboard-host.sh (verbatim) ----'
   cat "${REPO_DIR}/bootstrap/onboard-host.sh"
