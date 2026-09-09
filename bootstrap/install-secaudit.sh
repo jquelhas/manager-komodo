@@ -127,7 +127,12 @@ WANT_MARK="lynis=$SECAUDIT_LYNIS_SHA256 bench=$SECAUDIT_BENCH_SHA256"
 HAVE_MARK="$(cat "$MARKER" 2>/dev/null || true)"
 
 info "installing secaudit bundle into $PREFIX"
-run mkdir -p "$STATE/trigger.d" "$LOGDIR"
+# $PREFIX belongs in this list even though the payload is unpacked into it further down: the
+# chmod right below it runs unconditionally, and on a host where /opt/secaudit does not exist yet
+# the whole installer died on "chmod: cannot access". It went unnoticed on the manager and on
+# segcore-demo because the directory was already there from an earlier install — a fresh host was
+# the only place it could show, and segcore-host1 was the first one (2026-09-09).
+run mkdir -p "$PREFIX" "$STATE/trigger.d" "$LOGDIR"
 # 0751 on the prefix: traversable but not listable. `run.py --summary` is a read-only view of a
 # world-readable report, so needing sudo just to reach the script was a wart — but nobody should be
 # able to enumerate what is installed here either. The cache and the log dir stay 0750: lynis
