@@ -379,6 +379,48 @@ sudo sysctl --system && sysctl -n net.ipv4.ip_nonlocal_bind    # deve dizer 1
 ⚠️ **Isto ainda não está aplicado no `segcore-host1`.** O host1 tem exactamente a mesma exposição:
 publica `100.64.0.4:3000`, `:5432`, `:1025` e `:8025`. Só não caiu ainda porque não foi reiniciado.
 
+## Upgrading Periphery on a host
+
+Periphery is expected to track the Core's version. Nothing enforces it, and on 2026-09-09 a freshly
+onboarded host came up on 2.2.0 against a Core on 2.3.2 — two pins for the same version, and the
+stale one won. The drift is now measured (`secaudit_agent_version_matches_core`, alert
+`PeripheryVersionMismatch`) and the upgrade has a command:
+
+```bash
+scripts/upgrade-periphery.sh                 # publish a link for every host behind the Core
+scripts/upgrade-periphery.sh --host demo     # just one
+scripts/upgrade-periphery.sh --verify        # poll until the versions match
+scripts/upgrade-periphery.sh --pin           # print (and cross-check) the hash of a new version
+```
+
+It prints one paste-able command per host. Run it there as root, then `--verify` here.
+
+**On demand, never on a timer, and that is deliberate.** Periphery is the only channel the manager
+has to a host, so an agent that upgrades itself can break its own control channel — and the repair
+is SSH break-glass. Detection would work (the Server goes to state != Ok and Komodo alerts) but
+nothing would fix it, so this stays an operator action taken while somebody is watching.
+
+**The manager does not push it either.** It publishes a one-time link in the provisioning store —
+the same mechanism that delivers onboarding, which carries something more sensitive — and prints
+the command. Same "carry, not push" decision as the secaudit bundle: root SSH from the manager to
+every host would be a wider privilege path than anything it protects.
+
+**What this fixes beyond convenience.** Until now a host fetched `setup-periphery.py` from
+`raw.githubusercontent.com` and ran it **as root with no verification at all**. Now the manager
+fetches it once, checks it against the SHA-256 in
+[`bootstrap/periphery/versions.env`](../bootstrap/periphery/versions.env), and **inlines the
+verified bytes** into the served script — the host fetches nothing from the internet. Publishing
+refuses, loudly, if there is no pin for that version or if the hash differs.
+
+`--pin` also cross-checks: it compares the git blob SHA-1 of what it downloaded against what
+GitHub's API says the tag points at. The raw CDN and the API are different endpoints, so agreement
+is a statement about the repository rather than about what one server chose to serve.
+
+The served script backs up `/etc/komodo/periphery.config.toml` and restores it if the installer
+changes it. That file carries `allowed_ips` and the Core's public key, and `onboard-host.sh` writes
+it *before* running the installer on purpose — losing it would leave the host unreachable by the
+Core.
+
 ## Public SSH (60022)
 
 60022 is the break-glass door and it is open to the internet — the one service on these machines
