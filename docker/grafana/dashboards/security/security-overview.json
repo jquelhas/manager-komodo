@@ -482,7 +482,25 @@
               "Time 4": true,
               "host 2": true,
               "host 3": true,
-              "host 4": true
+              "host 4": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "__name__ 4": true,
+              "__name__ 5": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "job 4": true,
+              "job 5": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true,
+              "instance 4": true,
+              "instance 5": true
             },
             "renameByName": {
               "host 1": "host",
@@ -602,7 +620,19 @@
               "Time 1": true,
               "Time 2": true,
               "perspective 1": true,
-              "perspective 2": true
+              "perspective 2": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true
             },
             "renameByName": {
               "Value #A": "aberta",
@@ -678,7 +708,16 @@
             "excludeByName": {
               "Time": true,
               "Value": true,
-              "host": true
+              "host": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true
             }
           }
         }
@@ -846,7 +885,16 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true
+              "Value": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true
             }
           }
         }
@@ -913,7 +961,22 @@
             "excludeByName": {
               "Time 1": true,
               "Time 2": true,
-              "Time 3": true
+              "Time 3": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "__name__ 4": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "job 4": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true,
+              "instance 4": true
             },
             "renameByName": {
               "Value #A": "expira (ts)",
@@ -1001,7 +1064,16 @@
             "excludeByName": {
               "Time": true,
               "Value": true,
-              "scope": true
+              "scope": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true
             }
           }
         }
@@ -1382,7 +1454,22 @@
             "excludeByName": {
               "Time 1": true,
               "Time 2": true,
-              "Time 3": true
+              "Time 3": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "__name__ 4": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "job 4": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true,
+              "instance 4": true
             },
             "renameByName": {
               "Value #A": "inscrito",
@@ -1466,7 +1553,16 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value": true
+              "Value": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true
             }
           }
         }
@@ -1530,7 +1626,22 @@
             "excludeByName": {
               "Time 1": true,
               "Time 2": true,
-              "Time 3": true
+              "Time 3": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "__name__ 3": true,
+              "__name__ 4": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "job 3": true,
+              "job 4": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "instance 3": true,
+              "instance 4": true
             },
             "renameByName": {
               "Value #A": "lynis acima",
@@ -1654,7 +1765,19 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "suppressed": true
+              "suppressed": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true
+            },
+            "renameByName": {
+              "Value": "idade"
             }
           }
         },
@@ -1862,7 +1985,13 @@
               "__name__": true,
               "job": true,
               "instance": true,
-              "suppressed": true
+              "suppressed": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job 1": true,
+              "job 2": true,
+              "instance 1": true,
+              "instance 2": true
             },
             "indexByName": {
               "severity": 0,
@@ -1930,7 +2059,13 @@
               "__name__": true,
               "job": true,
               "instance": true,
-              "suppressed": true
+              "suppressed": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job 1": true,
+              "job 2": true,
+              "instance 1": true,
+              "instance 2": true
             },
             "indexByName": {
               "host": 0,
