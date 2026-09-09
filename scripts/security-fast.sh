@@ -191,7 +191,32 @@ jq -n --argjson ts "$(date +%s)" --argjson h "$imgs_json" '{schema:1, ts:$ts, ho
   | sec_state_write images.json
 sec_scan_end "$img_ok" "$img_total"
 
-# ---- 5. internal-service checklist drift ------------------------------------------------------
+# ---- 5. Periphery agent version vs the Core ---------------------------------------------------
+# Periphery is the ONLY channel the manager has to a host, and its version is expected to track the
+# Core's. Nothing enforced that: on 2026-09-09 a freshly onboarded host came up on 2.2.0 against a
+# Core on 2.3.2 (two pins for the same version, in add-host.sh and onboard-host.sh, and the stale
+# one won). It was found by accident. This is what would have found it on the next scrape.
+#
+# The check is here rather than in the exporter because the exporter makes no API calls on purpose
+# -- it renders state from disk so /metrics/security cannot hang. Two calls, whole fleet.
+sec_scan_begin agents manager
+agents_ok=1
+core_ver="$(kapi read/GetVersion '{}' 2>/dev/null | jq -r '.version // ""')"
+srv="$(kapi read/ListServers '{}' 2>/dev/null || true)"
+if [ -z "$core_ver" ] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"${srv:-null}"; then
+  sec_warn "GetVersion/ListServers failed — agent version skew not measured"
+  sec_scan_end 0 0
+else
+  jq -n --argjson ts "$(date +%s)" --arg core "$core_ver" --argjson s "$srv" \
+    '{schema:1, ts:$ts, core:$core,
+      agents: ( [ $s[] | {key: .name,
+                          value: {version: (.info.version // ""), state: (.info.state // "")}} ]
+                | from_entries )}' \
+    | sec_state_write agents.json
+  sec_scan_end "$agents_ok" "$(jq 'length' <<<"$srv")"
+fi
+
+# ---- 6. internal-service checklist drift ------------------------------------------------------
 # Homepage is deliberately NOT checked: a missing tile is cosmetic and never broke anything, while
 # several legitimate names (step-ca, the tailscale alias, Homepage itself) have no href by design —
 # checking it would produce four permanent false positives and train us to ignore the alert.

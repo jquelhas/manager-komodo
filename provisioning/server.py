@@ -688,6 +688,7 @@ _SEC_LOCK = threading.Lock()
 # have actually reported are emitted, so the set grows as the later phases land.
 _SCAN_BUDGETS = {
     "discovery": 900, "listeners": 900, "docker_ports": 900, "drift": 900,  # 5-minute sensors
+    "agents": 900,
     "collect": 129600, "ports": 129600, "tls": 129600,                      # daily -> 36h
     "web": 1036800,                                                         # weekly -> 12d
 }
@@ -910,6 +911,12 @@ _SECURITY_FAMILIES = [
     # Perimeter cross-scan, measured FROM a host
     ("secaudit_perimeter_port_open", "gauge", "A port found open by the cross-scan"),
     ("secaudit_perimeter_scan_timestamp_seconds", "gauge", "When the cross-scan last ran"),
+    # Periphery agent version vs the Core. Emitted as a 0/1 match and not a comparison: "older
+    # than" needs semver ordering, and what matters operationally is that the two disagree.
+    ("secaudit_agent_version_info", "gauge", "Periphery version reported by each host"),
+    ("secaudit_core_version_info", "gauge", "Komodo Core version the fleet is expected to match"),
+    ("secaudit_agent_version_matches_core", "gauge",
+     "1 if the host's Periphery version equals the Core's; 0 if it differs or is unreadable"),
     # Internal-service checklist drift
     ("secaudit_internal_name_misconfigured", "gauge",
      "1 if an internal name is missing from DNS/step-ca, or a step-ca entry has no router"),
@@ -1201,6 +1208,26 @@ def security_metrics_text():
                 add("secaudit_running_image_age_seconds",
                     lbl(host=host, image=name, suppressed="1" if sup else "0"),
                     max(0, int(now - created)))
+
+    # ---- Periphery agent version vs the Core --------------------------------------------------
+    # Periphery is the only channel the manager has to a host, so an agent that silently drifts
+    # from the Core is a latent failure in the one path used to fix everything else. Emitted as a
+    # 0/1 match rather than a version comparison: "older than" needs semver ordering, and what
+    # matters operationally is "these two disagree", which is the same answer for older or newer.
+    agents = _sec_load("state/agents.json")
+    if agents is None:
+        errors.append("state/agents.json")
+    else:
+        core = str(agents.get("core") or "")
+        if core:
+            add("secaudit_core_version_info", lbl(version=core), 1)
+        for host, a in (agents.get("agents") or {}).items():
+            ver = str(a.get("version") or "")
+            add("secaudit_agent_version_info", lbl(host=host, version=ver or "unknown"), 1)
+            # Unknown version counts as a mismatch: a host whose version cannot be read is not a
+            # host known to match.
+            add("secaudit_agent_version_matches_core", lbl(host=host),
+                1 if (core and ver and ver == core) else 0)
 
     # ---- internal-service checklist drift -----------------------------------------------------
     drift = _sec_load("state/drift.json")

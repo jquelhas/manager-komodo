@@ -298,3 +298,22 @@ groups:
         annotations:
           summary: "Perimeter cross-scan has not run in 48h"
           description: "The external firewall allowlist and the app-host -> manager ACL deny are unverified while this is stale. Check secaudit-host.timer on {{ $labels.source_host }}."
+      # Periphery is the ONLY channel the manager has to a host, so an agent drifting from the
+      # Core is a latent failure in the one path used to fix everything else. On 2026-09-09 a
+      # freshly onboarded host came up on 2.2.0 against a Core on 2.3.2 and it was found by
+      # accident, because nothing measured this.
+      #
+      # `for: 6h` and not minutes: upgrading the Core legitimately puts every host in mismatch
+      # until they are upgraded too, and that is normal for the length of a maintenance session.
+      # Six hours is long enough not to page during one, short enough to surface within the day.
+      # With the scope="secaudit" route's 24h repeat_interval, a mismatch left unfixed is one
+      # e-mail a day, which is the right pressure for "your agents disagree with your Core".
+      - alert: PeripheryVersionMismatch
+        expr: secaudit_agent_version_matches_core == 0
+        for: 6h
+        labels:
+          severity: warning
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: Periphery version does not match the Core"
+          description: "Versions are in secaudit_agent_version_info. Upgrade on the host: fetch scripts/setup-periphery.py for the Core's version, run it with --version and --connect-as <host>, then systemctl restart periphery. A version that cannot be read counts as a mismatch, not as a match."
