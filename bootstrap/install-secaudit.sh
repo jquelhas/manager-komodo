@@ -28,6 +28,14 @@ STATE="${SECAUDIT_STATE:-/var/lib/secaudit}"
 CACHE="${SECAUDIT_CACHE:-/var/cache/secaudit}"
 LOGDIR="${SECAUDIT_LOG:-/var/log/secaudit}"
 UNIT_DIR="${SECAUDIT_UNIT_DIR:-/etc/systemd/system}"
+# How to tell the operator to uninstall. $0 is right when the script was copied to the host, and
+# WRONG when it arrived through the self-extracting bundle: that unpacks into a mktemp dir and
+# deletes it on exit, so the closing message was pointing at a path that no longer existed by the
+# time it was printed. Detect that case and hand back the same one-liner that installed it.
+case "$0" in
+  /tmp/*) UNINSTALL_HINT='sudo bash -c "$(curl -fsSL https://apps.internal/artifacts/secaudit-bundle.sh)" -- --uninstall' ;;
+  *)      UNINSTALL_HINT="$0 --uninstall" ;;
+esac
 
 c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 info() { echo "${c_grn}[+]${c_rst} $*"; }
@@ -297,5 +305,5 @@ Then check the report and the step results:
   sudo grep '"k":"tool_error"' $STATE/report.ndjson || echo "no tool errors"
 
 The manager collects it from here; nothing on this host listens on a port for it.
-To remove everything: $0 --uninstall
+To remove everything: $UNINSTALL_HINT
 EOM
