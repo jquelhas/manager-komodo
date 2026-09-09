@@ -907,6 +907,11 @@ _SECURITY_FAMILIES = [
     ("secaudit_lynis_findings_over_budget", "gauge", "Findings above the committed budget"),
     ("secaudit_lynis_hardening_index", "gauge", "Lynis hardening index, 0-100 (trend only)"),
     ("secaudit_packages_vulnerable", "gauge", "Packages with a known vulnerability, per lynis"),
+    # Findings that must NOT be absorbed by a budget. The ratchet is right for counts of
+    # suggestions and wrong for a fact that is severe on its own: on 2026-09-09 segcore-host1 was
+    # found running Ubuntu 25.04, end-of-life since 2026-01-01, and the auditor stayed green
+    # because the default warning budget is 5 and the host had 2.
+    ("secaudit_os_end_of_life", "gauge", "1 if lynis reports the OS release is end-of-life"),
     # CIS Docker benchmark
     ("secaudit_bench_failed", "gauge", "A failed CIS Docker Benchmark check"),
     ("secaudit_bench_failures", "gauge", "Count of benchmark failures per section"),
@@ -1116,6 +1121,13 @@ def security_metrics_text():
                 lbl(host=host, test_id=r.get("test_id", ""), section=section,
                     severity=sev, detail=r.get("detail", "")[:60], suppressed=sl), 1)
             lyn_counts[(section, sev, sl)] = lyn_counts.get((section, sev, sl), 0) + 1
+        # GEN-0010 is "this release is end-of-life". Emitted as its own metric, outside the budget:
+        # an unsupported OS is not a quantity to stay under, and no host should be able to carry it
+        # quietly because it happens to have few other warnings.
+        eol = next((r for r in rec("lynis") if r.get("test_id") == "GEN-0010"), None)
+        add("secaudit_os_end_of_life",
+            lbl(host=host, detail=(eol.get("detail") or eol.get("desc") or "")[:80] if eol else ""),
+            1 if eol else 0)
         for (section, sev, sl), n in sorted(lyn_counts.items()):
             add("secaudit_lynis_findings",
                 lbl(host=host, section=section, severity=sev, suppressed=sl), n)

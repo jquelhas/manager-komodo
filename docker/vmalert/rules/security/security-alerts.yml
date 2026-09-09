@@ -317,3 +317,18 @@ groups:
         annotations:
           summary: "{{ $labels.host }}: Periphery version does not match the Core"
           description: "Versions are in secaudit_agent_version_info. Upgrade on the host: fetch scripts/setup-periphery.py for the Core's version, run it with --version and --connect-as <host>, then systemctl restart periphery. A version that cannot be read counts as a mismatch, not as a match."
+      # Deliberately OUTSIDE the budget mechanism. The ratchet — alert on regression above a
+      # committed count — is right for suggestions and wrong here: an unsupported OS is not a
+      # quantity to stay under. On 2026-09-09 segcore-host1 was found on Ubuntu 25.04, EOL since
+      # 2026-01-01, and the auditor stayed green because the default warning budget is 5 and the
+      # host had 2 warnings. A budget that can absorb "this machine receives no security updates"
+      # is a budget measuring the wrong thing.
+      - alert: OperatingSystemEndOfLife
+        expr: secaudit_os_end_of_life == 1
+        for: 1h
+        labels:
+          severity: critical
+          scope: secaudit
+        annotations:
+          summary: "{{ $labels.host }}: the OS release is end-of-life"
+          description: "{{ $labels.detail }}. No security updates are published for it, so plan an upgrade. NOTE that secaudit_packages_vulnerable reads 0 on such a host — that means nobody is publishing fixes, not that there is nothing to fix, and it is the one number not to take comfort from here."
