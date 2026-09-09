@@ -70,7 +70,7 @@ services:
   # docker-socket-proxy — read-only Docker API in front of Traefik. Traefik never touches the raw
   # socket, so a Traefik compromise can't reach root via docker.sock. Only read endpoints proxied.
   socket-proxy:
-    image: ghcr.io/tecnativa/docker-socket-proxy:v0.4.2   # última estável (2026)
+    image: ghcr.io/tecnativa/docker-socket-proxy:v0.5.0   # última estável (2026-09)
     container_name: manager-socket-proxy
     restart: unless-stopped
     networks: [manager-komodo]
@@ -279,7 +279,7 @@ services:
   # VictoriaMetrics — single-node TSDB + PromQL. Internal only (vm.apps.internal via step-ca).
   # Scrapes app hosts directly over the mesh; targets via file_sd.
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.147.0   # latest stable (2026)
+    image: victoriametrics/victoria-metrics:v1.151.0   # latest stable (2026-09-09)
     container_name: manager-victoriametrics
     restart: unless-stopped
     networks: [manager-komodo]
@@ -301,7 +301,7 @@ services:
 
   # vmalert — evaluates recording/alerting rules against VM, writes results back to VM.
   vmalert:
-    image: victoriametrics/vmalert:v1.147.0            # matches VM version
+    image: victoriametrics/vmalert:v1.151.0            # matches VM version
     container_name: manager-vmalert
     restart: unless-stopped
     depends_on: [victoriametrics, alertmanager]
@@ -374,7 +374,7 @@ services:
 
   # Grafana — central dashboards. Internal only (grafana.apps.internal via step-ca).
   grafana:
-    image: grafana/grafana:13.1.0                      # OSS edition; latest stable (2026-07-01)
+    image: grafana/grafana:13.2.1                      # OSS edition; latest stable (2026-09-09)
     container_name: manager-grafana
     restart: unless-stopped
     depends_on: [victoriametrics]
@@ -428,7 +428,7 @@ services:
   # v2 auth is key-pair based (core.pub / periphery.pub); host periphery trust is set up at
   # onboarding (step 5), not here. No docker.sock on Core (only peripheries need it).
   komodo-core:
-    image: ghcr.io/moghtech/komodo-core:2.3.2          # latest stable (2026-08-11)
+    image: ghcr.io/moghtech/komodo-core:2.3.3          # latest stable (2026-09)
     container_name: manager-komodo-core
     restart: unless-stopped
     depends_on: [komodo-ferretdb]
@@ -504,7 +504,7 @@ services:
 
   # pghero — the analysis UI itself.
   pghero:
-    image: ankane/pghero:v3.8.0                        # latest stable (2026)
+    image: ankane/pghero:v4.0.1                        # latest stable (2026-08-15)
     container_name: manager-pghero
     restart: unless-stopped
     depends_on:
