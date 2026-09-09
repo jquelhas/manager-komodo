@@ -635,10 +635,49 @@ reporte.
 
 ## Offboard (remove a host)
 
-Delete the Komodo Server + Repo (removes it from monitoring auto-discovery and deploys), then remove
-the mesh node:
-
 ```bash
+# 1. the deploy resource. NOTE: DeleteRepo deletes the directory at `path` ON THE HOST, and
+#    DeleteStack does not. For an offboard that is what you want; if you are removing the resource
+#    but KEEPING the machine, first point `path` at a throwaway directory and read it back to
+#    confirm — see the 2026-09-08 correction in docs/DESIGN.md.
+#    (write/DeleteRepo / write/DeleteStack, or the UI)
+
+# 2. the Komodo Server — stops Komodo's own alerts and the metrics auto-discovery
+#    (write/DeleteServer)
+
+# 3. the mesh node
+docker exec manager-headscale headscale nodes list          # find the id
 docker exec manager-headscale headscale nodes delete -i <node-id> --force
-# + delete the Komodo Server and Repo via the UI or API (write/DeleteServer, write/DeleteRepo)
+
+# 4. accept the coverage reduction, or discovery stays degraded
+rm -f security/state/targets.json && ./scripts/security-discover.sh
 ```
+
+**Step 4 is not optional if the host was in `targets.json`.** `security-discover.sh` refuses to
+shrink the target list on its own: fewer targets than last time means it keeps the previous cache
+and sets `shrunk=true`, which raises `SecurityDiscoveryDegraded`. That guard exists because a
+deleted Server and a demoted API key look identical from here, and silently auditing fewer machines
+is the failure you would never notice. Deleting `targets.json` is how a human says "yes, on
+purpose".
+
+Check it took: `jq '{ok, shrunk, count}' security/state/discovery.json` — want `ok=true`,
+`shrunk=false`, and the new count.
+
+### Silencing a host without removing it
+
+For a host you want to keep registered but stop hearing about — a test box, a machine mid-repair —
+deleting it is the wrong tool. Both alert sources converge on Alertmanager and each carries the
+host's name in a label:
+
+```
+Komodo   ->  server="<name>"     (provisioning/server.py, komodo_alert_to_am)
+vmalert  ->  host="<name>"       (every secaudit_* and segcore_* rule)
+```
+
+So one child route in `docker/alertmanager/alertmanager.yml.tmpl` pointing at a null receiver
+silences **everything** about that host, from both sources, without touching a single alert rule.
+That is the whole reason to do it there rather than with a tag threaded through 24 rules.
+
+⚠️ If you implement it, do **not** write `server=~""` for the empty case: an empty regex matches an
+empty label value, so it would swallow every alert that has no `host` label. Use a sentinel that
+matches nothing (`SILENCED_HOSTS_RE=__none__`) as the default.
