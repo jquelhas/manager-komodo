@@ -38,7 +38,27 @@ SETUP_URL="${SETUP_URL:-https://raw.githubusercontent.com/moghtech/komodo/${PERI
 KOMODO_ROOT="${KOMODO_ROOT:-/etc/komodo}"
 # Periphery (and thus deploys) run as this user, in the docker group — so pull/on_pull files are
 # owned by it, not root. APP_PATH is pre-created owned by it so Komodo's first clone works.
-DEPLOY_USER="${DEPLOY_USER:-${KOMODO_DEPLOY_USER:-ubuntu}}"
+# Resolution order: an explicit override, then `ubuntu` (the Ubuntu/OVH cloud-image default), then
+# THE ACCOUNT THAT INVOKED SUDO. That last fallback exists because on 2026-09-09 a host whose admin
+# user was `jmf` had this whole block skipped -- `id ubuntu` failed, the warning scrolled past in
+# the output, and Periphery stayed running as root while the rest of the fleet runs as a user.
+#
+# SUDO_USER is the right fallback and not just a convenient one: on Ubuntu and most distributions
+# the first non-root account is uid 1000, which is exactly what the application's DOCKER_USER=1000
+# expects to own the bind-mounted files under APP_PATH. Guessing a name would break that; using the
+# account that is actually there preserves it. The uid is checked in the preflight below, because
+# "usually 1000" is not "always 1000" and a mismatch there is silent until Traefik cannot read its
+# own ACME store.
+DEPLOY_USER="${DEPLOY_USER:-${KOMODO_DEPLOY_USER:-}}"
+if [ -z "$DEPLOY_USER" ]; then
+  if id ubuntu >/dev/null 2>&1; then
+    DEPLOY_USER=ubuntu
+  elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    DEPLOY_USER="$SUDO_USER"
+  else
+    DEPLOY_USER=ubuntu   # keeps the old behaviour, and the warning further down still fires
+  fi
+fi
 APP_PATH="${APP_PATH:-${KOMODO_APP_PATH:-/opt/SEGCORE}}"
 MANAGER_MESH_IP="${MANAGER_MESH_IP:-100.64.0.1}"
 HEADSCALE_V4_RANGE="100.64.0.0/16"          # our mesh range (must not clash with other overlays)
@@ -60,6 +80,7 @@ while [ $# -gt 0 ]; do
     --check)          CHECK_ONLY=1; shift ;;
     --login-server)   LOGIN_SERVER="$2"; shift 2 ;;
     --core-pubkey)    CORE_PUBLIC_KEY="$2"; shift 2 ;;
+    --deploy-user) DEPLOY_USER="$2"; shift 2 ;;
     --periphery-version) PERIPHERY_VERSION="$2"; shift 2 ;;
     -h|--help)        usage ;;
     *) die "unknown argument: $1 (use --help)" ;;
@@ -127,6 +148,26 @@ OTHER_OVERLAY="$(ip -o link show 2>/dev/null | grep -oE '(wt0|nb-[a-z0-9]+|netbi
 command -v docker  >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 \
   && info "Docker + compose present — OK" || info "Docker/compose missing — will install."
 command -v python3 >/dev/null 2>&1 && info "python3 present — OK" || info "python3 missing — will install (needed by setup-periphery.py)."
+
+# The deploy user and its uid, stated plainly rather than discovered later. Periphery runs as this
+# account and the application's containers run as DOCKER_USER:DOCKER_GROUP (1000:1000) against
+# files this account owns, so a uid other than 1000 needs DOCKER_USER changed for this host in the
+# Komodo environment. Left as a warning and not a blocker: it is a legitimate configuration, just
+# one that needs a second step.
+if id "$DEPLOY_USER" >/dev/null 2>&1; then
+  DEPLOY_UID="$(id -u "$DEPLOY_USER")"; DEPLOY_GID="$(id -g "$DEPLOY_USER")"
+  if [ "$DEPLOY_UID" = 1000 ] && [ "$DEPLOY_GID" = 1000 ]; then
+    info "Deploy user: ${DEPLOY_USER} (${DEPLOY_UID}:${DEPLOY_GID}) — matches the app's DOCKER_USER"
+  else
+    warn "deploy user '${DEPLOY_USER}' is ${DEPLOY_UID}:${DEPLOY_GID}, not 1000:1000."
+    warn "  The app's containers run as DOCKER_USER:DOCKER_GROUP against files this user owns."
+    warn "  After onboarding, set DOCKER_USER=${DEPLOY_UID} and DOCKER_GROUP=${DEPLOY_GID} in this"
+    warn "  host's environment in the Komodo UI, or Traefik will not be able to read its ACME store."
+  fi
+else
+  warn "deploy user '${DEPLOY_USER}' does not exist — Periphery will run as ROOT on this host,"
+  warn "  unlike the rest of the fleet. Create the user first, or pass --deploy-user <name>."
+fi
 
 echo
 [ "$BLOCKERS" -gt 0 ] && die "$BLOCKERS blocker(s) found. Nothing was changed. Fix the above and re-run."

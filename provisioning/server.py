@@ -63,6 +63,20 @@ ALERT_RE = re.compile(r"^/alert/komodo$")  # internal only (Traefik routes /prov
 # "${KOMODO_ALERT_SILENCE_URL}/start", so putting the secret inside that URL means the deploy
 # script needs no change at all -- and it is delivered per host through the same Komodo
 # per-host `environment` that already carries every other per-host value.
+# Artefacts for hosts that are ALREADY on the mesh: the pinned Periphery installer and its
+# wrapper. MESH ONLY, and no one-time uuid — deliberately unlike /provisioning.
+#
+# /provisioning/<uuid>/ is the COLD-START channel and nothing else: a brand-new host is not on the
+# mesh yet, so onboarding has to arrive over the public internet, and a one-time capability is what
+# makes that safe. Once a host is onboarded it is a WireGuard-authenticated member of a closed
+# network, and the Headscale ACL is the access control — a uuid and a TTL there would be ceremony
+# protecting a file whose integrity already comes from a SHA-256 pin.
+#
+# No slashes in the pattern, so there is no traversal to reason about, and the path carries no
+# /provisioning prefix, so the public router cannot match it.
+ARTIFACT_RE = re.compile(r"^/artifacts/([A-Za-z0-9][A-Za-z0-9._+-]{0,127})$")
+ARTIFACTS_DIR = os.path.realpath(os.environ.get("ARTIFACTS_DIR", "/artifacts"))
+
 MAINTENANCE_RE = re.compile(r"^/maintenance/silence/([A-Za-z0-9_-]{16,128})/(start|end)$")
 # One secret on the manager; each host's token is DERIVED from it and from the host's own name, so
 # there is no token database to keep and a host's token is useless for any other host.
@@ -1362,6 +1376,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = security_metrics_text().encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # Mesh-only artefacts for onboarded hosts (see ARTIFACT_RE).
+        ma = ARTIFACT_RE.match(self.path)
+        if ma:
+            path = os.path.realpath(os.path.join(ARTIFACTS_DIR, ma.group(1)))
+            # realpath + prefix check even though the pattern forbids slashes: a symlink inside the
+            # directory could still point out of it, and this is reachable by every app host.
+            if not path.startswith(ARTIFACTS_DIR + os.sep) or not os.path.isfile(path):
+                return self._404()
+            try:
+                with open(path, "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                return self._404()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()

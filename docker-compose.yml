@@ -232,6 +232,11 @@ services:
       # step-ca root, served at /provisioning/step-ca-root.crt so a host can bootstrap trust in
       # *.apps.internal. Read-only, and a public key: nothing secret leaves the manager.
       - ./docker/traefik/certs/step-ca-root.crt:/app/step-ca-root.crt:ro
+      # Artefacts served MESH-ONLY at /artifacts/<name> to hosts that are already onboarded (the
+      # pinned Periphery installer and its wrapper). Read-only: they are written by
+      # scripts/upgrade-periphery.sh as the operator, and the one publicly routed process in the
+      # stack has no business being able to replace something hosts execute as root.
+      - ./provisioning/artifacts:/artifacts:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.provisioning.rule=Host(`${PUBLIC_DOMAIN}`) && PathPrefix(`/provisioning`)"
@@ -252,6 +257,19 @@ services:
       # step-ca extra_hosts entry, rather than introducing an internal hostname -- that 5-step
       # checklist is exactly what broke the whole internal ACME queue on 2026-08-23.
       # Explicit priority because homepage also claims Host(`apps.internal`).
+      # Artefacts for hosts that are ALREADY onboarded, mesh-only and with no one-time uuid.
+      #
+      # The split is the point. /provisioning/<uuid>/ stays public because it is the COLD START: a
+      # brand-new host is not on the mesh yet, and a one-time capability is what makes delivering
+      # over the internet safe. After onboarding the host is a WireGuard-authenticated member of a
+      # closed network, so the periphery upgrade and the secaudit bundle have no business crossing
+      # the public internet, and no business carrying a capability uuid either — the Headscale ACL
+      # is the access control and a SHA-256 pin is the integrity.
+      - "traefik.http.routers.artifacts.rule=Host(`apps.internal`) && PathPrefix(`/artifacts`)"
+      - "traefik.http.routers.artifacts.entrypoints=websecure-internal"
+      - "traefik.http.routers.artifacts.tls.certresolver=stepca"
+      - "traefik.http.routers.artifacts.priority=150"
+      - "traefik.http.routers.artifacts.service=provisioning"
       - "traefik.http.routers.maintenance.rule=Host(`apps.internal`) && PathPrefix(`/maintenance`)"
       - "traefik.http.routers.maintenance.entrypoints=websecure-internal"
       - "traefik.http.routers.maintenance.tls.certresolver=stepca"

@@ -379,6 +379,47 @@ sudo sysctl --system && sysctl -n net.ipv4.ip_nonlocal_bind    # deve dizer 1
 ⚠️ **Isto ainda não está aplicado no `segcore-host1`.** O host1 tem exactamente a mesma exposição:
 publica `100.64.0.4:3000`, `:5432`, `:1025` e `:8025`. Só não caiu ainda porque não foi reiniciado.
 
+## The deploy user (Periphery's account)
+
+Periphery runs as a normal account, not root, so files a deploy writes are owned by it rather than
+by root. The account is resolved by `bootstrap/onboard-host.sh` in this order:
+
+1. `--deploy-user <name>` or `DEPLOY_USER=` / `KOMODO_DEPLOY_USER=`;
+2. **`ubuntu`**, if it exists — the Ubuntu/OVH cloud-image default, which is what the fleet uses;
+3. **the account that invoked `sudo`** (`SUDO_USER`);
+4. failing all that, `ubuntu` — which does not exist, so Periphery stays **root** and the preflight
+   says so.
+
+**Why `SUDO_USER` and not a dedicated `manager` account.** On Ubuntu and most distributions the
+first non-root account is uid **1000**, and that number is load-bearing: the application's
+containers run as `DOCKER_USER:DOCKER_GROUP` (`1000:1000`) against files this account owns under
+`/opt/SEGCORE`. Creating a fresh service account on a cloud image would land on 1001, and then
+`certs/` is owned by 1001 while Traefik runs as 1000 — which is exactly the failure that took an
+evening to find on 2026-09-08: Traefik logs `ACME resolve is skipped`, drops every router's
+resolver **without dying**, and serves the default certificate. Using the account that is already
+there preserves the coincidence instead of fighting it.
+
+A dedicated account would buy real things — Periphery would stop running as the human's sudo-capable
+account with its `~/.ssh` — but it does **not** buy containment: the account must be in the `docker`
+group, and docker group membership is root-equivalent (`docker run -v /:/mnt`). Judged not worth a
+coordinated uid migration on hosts serving tenants.
+
+**The preflight states the uid** rather than leaving it to be discovered:
+
+```
+[+] Deploy user: ubuntu (1000:1000) — matches the app's DOCKER_USER
+[!] deploy user 'daemon' is 1:1, not 1000:1000.
+[!]   After onboarding, set DOCKER_USER=1 and DOCKER_GROUP=1 in this host's environment ...
+```
+
+A uid other than 1000 is a legitimate configuration, just one that needs `DOCKER_USER` changed for
+that host in the Komodo UI — so it warns and continues rather than blocking.
+
+**Known divergence.** `local-test-server` (onboarded 2026-09-09, before this fallback existed) runs
+Periphery as **root**: its admin user is `jmf`, `ubuntu` did not exist, and the whole block was
+skipped with a warning that scrolled past in the output. `segcore-demo` and `segcore-host1` run as
+`ubuntu`. Not migrated — see above on why that is not free.
+
 ## Upgrading Periphery on a host
 
 Periphery is expected to track the Core's version. Nothing enforces it, and on 2026-09-09 a freshly
