@@ -1153,7 +1153,11 @@ def security_metrics_text():
             sup, _e = _sec_suppressed(valid_sup, used_sup, "bench", host, r.get("id", ""))
             sl = "1" if sup else "0"
             add("secaudit_bench_failed",
-                lbl(host=host, id=r.get("id", ""), section=section, suppressed=sl), 1)
+                # `desc` carries the CIS check's text. Without it the table shows "1.1.1" and
+                # nothing else, which is only readable to somebody who knows the numbering by
+                # heart. It adds a label, not a series: the set is the same 99 either way.
+                lbl(host=host, id=r.get("id", ""), section=section,
+                    desc=(r.get("desc") or "").strip()[:90], suppressed=sl), 1)
             bench_counts[(section, sl)] = bench_counts.get((section, sl), 0) + 1
         for (section, sl), n in sorted(bench_counts.items()):
             add("secaudit_bench_failures", lbl(host=host, section=section, suppressed=sl), n)
