@@ -1603,16 +1603,16 @@
     },
     {
       "type": "table",
-      "title": "Hardening: achados acima do budget",
-      "description": "O ratchet. Ambos os scanners reportam dezenas de coisas que ningu\u00e9m vai corrigir num VPS, por isso o alerta \u00e9 sobre REGRESS\u00c3O acima do budget commitado em security/baseline/bench.toml \u2014 nunca sobre a contagem absoluta.",
+      "title": "Hardening por host: acima do budget, e o \u00edndice",
+      "description": "O ratchet. Ambos os scanners reportam dezenas de coisas que ningu\u00e9m vai corrigir num VPS, por isso o alerta \u00e9 sobre REGRESS\u00c3O acima do budget commitado em security/baseline/bench.toml, nunca sobre a contagem absoluta. ZERO nas tr\u00eas primeiras colunas \u00e9 o estado bom. O \u00edndice do lynis (0-100) \u00e9 tend\u00eancia e nunca alerta \u2014 n\u00e3o h\u00e1 limiar defens\u00e1vel para ele. AVISO: um budget generoso pode absorver um achado grave; foi o que aconteceu com o SO em fim de vida do segcore-host1, e \u00e9 por isso que esse tem alerta pr\u00f3prio, fora do budget.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 11,
-        "x": 13,
+        "w": 24,
+        "x": 0,
         "y": 59
       },
       "options": {
@@ -1625,7 +1625,20 @@
             "filterable": true
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          }
+        ]
       },
       "transformations": [
         {
@@ -1637,6 +1650,7 @@
         {
           "id": "joinByField",
           "options": {
+            "byField": "host",
             "mode": "outer"
           }
         },
@@ -1644,66 +1658,93 @@
           "id": "organize",
           "options": {
             "excludeByName": {
+              "Time": true,
               "Time 1": true,
               "Time 2": true,
               "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
               "__name__": true,
               "__name__ 1": true,
               "__name__ 2": true,
               "__name__ 3": true,
               "__name__ 4": true,
+              "__name__ 5": true,
               "job": true,
               "job 1": true,
               "job 2": true,
               "job 3": true,
               "job 4": true,
+              "job 5": true,
               "instance": true,
               "instance 1": true,
               "instance 2": true,
               "instance 3": true,
-              "instance 4": true
+              "instance 4": true,
+              "instance 5": true,
+              "severity": true,
+              "severity 1": true,
+              "severity 2": true,
+              "severity 3": true,
+              "severity 4": true,
+              "severity 5": true
             },
             "renameByName": {
-              "Value #A": "lynis acima",
-              "Value #B": "CIS acima",
-              "Value #C": "\u00edndice lynis"
+              "Value 1": "avisos > budget",
+              "Value 2": "sugest\u00f5es > budget",
+              "Value 3": "CIS Docker > budget",
+              "Value 4": "\u00edndice lynis"
+            },
+            "indexByName": {
+              "host": 0,
+              "avisos > budget": 1,
+              "sugest\u00f5es > budget": 2,
+              "CIS Docker > budget": 3,
+              "\u00edndice lynis": 4
             }
           }
         }
       ],
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "secaudit_lynis_findings_over_budget",
-          "legendFormat": "",
           "refId": "A",
           "instant": true,
-          "format": "table"
-        },
-        {
+          "format": "table",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "secaudit_bench_failures_over_budget",
-          "legendFormat": "",
+          "expr": "secaudit_lynis_findings_over_budget{severity=\"warning\"}"
+        },
+        {
           "refId": "B",
           "instant": true,
-          "format": "table"
-        },
-        {
+          "format": "table",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "secaudit_lynis_hardening_index",
-          "legendFormat": "",
+          "expr": "secaudit_lynis_findings_over_budget{severity=\"suggestion\"}"
+        },
+        {
           "refId": "C",
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_bench_failures_over_budget"
+        },
+        {
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_lynis_hardening_index"
         }
       ]
     },
