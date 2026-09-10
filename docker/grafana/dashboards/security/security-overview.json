@@ -574,7 +574,7 @@
     {
       "type": "table",
       "title": "Portas expostas vs baseline (perspectiva local)",
-      "description": "Cada porta bound numa morada encaminh\u00e1vel. A coluna 'fora da baseline' a 1 \u00e9 o achado; scope distingue wildcard (0.0.0.0) de public (o IP p\u00fablico do host).",
+      "description": "Cada porta bound numa morada encaminh\u00e1vel, por host, com o veredicto da baseline. 'fora da baseline' a 1 \u00e9 o achado; 0 \u00e9 aceite. Mede o que est\u00e1 BOUND, n\u00e3o o que est\u00e1 exposto: a firewall externa \u00e9 a autorit\u00e1ria e \u00e9 invis\u00edvel daqui.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -638,7 +638,8 @@
               "Value #A": "aberta",
               "Value #B": "fora da baseline",
               "Value 1": "aberta",
-              "Value 2": "fora da baseline"
+              "Value 2": "fora da baseline",
+              "suppressed": "suprimida"
             },
             "indexByName": {
               "host": 0,
@@ -646,9 +647,9 @@
               "port": 2,
               "bind": 3,
               "scope": 4,
-              "suppressed": 5,
-              "Value 1": 6,
-              "Value 2": 7
+              "aberta": 5,
+              "fora da baseline": 6,
+              "suprimida": 7
             }
           }
         }
@@ -670,7 +671,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "secaudit_port_unexpected{perspective=\"local\"}",
+          "expr": "secaudit_port_unexpected{perspective=\"local\"} or (secaudit_port_open{perspective=\"local\"} * 0)",
           "legendFormat": "",
           "refId": "B",
           "instant": true,
