@@ -636,7 +636,19 @@
             },
             "renameByName": {
               "Value #A": "aberta",
-              "Value #B": "fora da baseline"
+              "Value #B": "fora da baseline",
+              "Value 1": "aberta",
+              "Value 2": "fora da baseline"
+            },
+            "indexByName": {
+              "host": 0,
+              "proto": 1,
+              "port": 2,
+              "bind": 3,
+              "scope": 4,
+              "suppressed": 5,
+              "Value 1": 6,
+              "Value 2": 7
             }
           }
         }
@@ -668,8 +680,8 @@
     },
     {
       "type": "table",
-      "title": "Listeners no manager",
-      "description": "Tabela de sockets do manager. `process` vem vazio para sockets de root porque o sensor corre como ubuntu \u2014 o bundle nativo da fase 2 corre como root e preenche-o.",
+      "title": "Listeners por host (o que est\u00e1 bound)",
+      "description": "Cada socket \u00e0 escuta numa morada encaminh\u00e1vel, por host. Mede o que est\u00e1 BOUND, n\u00e3o o que est\u00e1 exposto: n\u00e3o h\u00e1 firewall nestes hosts, a externa (OVH) \u00e9 a autorit\u00e1ria e \u00e9 invis\u00edvel daqui. Serve para detectar deriva \u2014 um -p 5432:5432 acidental aparece em 5 min. Chamava-se 'Listeners no manager' e mostrava os tr\u00eas hosts com a coluna host ESCONDIDA: era da fase 1, quando s\u00f3 o manager reportava, e ficou a afirmar uma coisa falsa.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -708,7 +720,6 @@
             "excludeByName": {
               "Time": true,
               "Value": true,
-              "host": true,
               "__name__": true,
               "__name__ 1": true,
               "__name__ 2": true,
@@ -718,6 +729,14 @@
               "instance": true,
               "instance 1": true,
               "instance 2": true
+            },
+            "indexByName": {
+              "host": 0,
+              "proto": 1,
+              "port": 2,
+              "bind": 3,
+              "scope": 4,
+              "process": 5
             }
           }
         }
