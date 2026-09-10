@@ -431,8 +431,8 @@
     },
     {
       "type": "table",
-      "title": "Frescura dos scans",
-      "description": "Idade vs budget por scan. O budget viaja como m\u00e9trica (secaudit_scan_max_age_seconds), por isso esta tabela e as regras de alerta nunca podem discordar sobre o que \u00e9 'velho'.",
+      "title": "Frescura do pipeline do manager (n\u00e3o das auditorias dos hosts)",
+      "description": "Os scans que o MANAGER corre: descoberta, sensores de 5 min, recolha. Todos aparecem com host=manager porque \u00e9 ele que os corre \u2014 quando cada host se auditou est\u00e1 na tabela 'Auditoria por host'. 'budget' \u00e9 a idade a partir da qual o scan conta como desactualizado, por tipo de scan: \u00e9 o que permite UMA regra (SecurityScanStale) cobrir cad\u00eancias de 5 minutos a 12 dias, comparando cada scan com o seu pr\u00f3prio limite em vez de um limiar global.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -456,7 +456,68 @@
             "filterable": true
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #A"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "displayName",
+                "value": "\u00faltimo sucesso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "displayName",
+                "value": "idade"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #C"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "displayName",
+                "value": "budget (fica velho a partir de)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #D"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "ok"
+              }
+            ]
+          }
+        ]
       },
       "transformations": [
         {
@@ -518,7 +579,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "secaudit_scan_last_success_timestamp_seconds",
+          "expr": "secaudit_scan_last_success_timestamp_seconds * 1000",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -1430,15 +1491,15 @@
     },
     {
       "type": "table",
-      "title": "Cobertura por host",
-      "description": "Inscrito, idade do relat\u00f3rio e se ficou completo. 'N\u00e3o inscrito' \u00e9 estado deliberado, n\u00e3o falha.",
+      "title": "Auditoria por host: quando correu, e se ficou completa",
+      "description": "Quando a auditoria de SO de cada host correu de facto, em data e hora. \u00c9 a coluna que responde a 'os scans est\u00e3o a correr todos os dias?' \u2014 a idade sozinha diz que est\u00e1 fresca, n\u00e3o a que horas. 'N\u00e3o inscrito' \u00e9 estado deliberado (a frota \u00e9 inscrita m\u00e1quina a m\u00e1quina) e nunca alerta.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 6,
-        "w": 11,
+        "w": 24,
         "x": 0,
         "y": 53
       },
@@ -1452,7 +1513,52 @@
             "filterable": true
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "\u00faltima auditoria"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.width",
+                "value": 210
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "idade"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          }
+        ]
       },
       "transformations": [
         {
@@ -1492,46 +1598,65 @@
               "instance 4": true
             },
             "renameByName": {
-              "Value #A": "inscrito",
-              "Value #B": "idade (s)",
-              "Value #C": "parcial"
+              "Value #A": "\u00faltima auditoria",
+              "Value #B": "idade",
+              "Value #C": "inscrito",
+              "Value #D": "parcial",
+              "Value 1": "\u00faltima auditoria",
+              "Value 2": "idade",
+              "Value 3": "inscrito",
+              "Value 4": "parcial"
+            },
+            "indexByName": {
+              "host": 0,
+              "\u00faltima auditoria": 1,
+              "idade": 2,
+              "inscrito": 3,
+              "parcial": 4
             }
           }
         }
       ],
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "secaudit_host_enrolled",
-          "legendFormat": "",
           "refId": "A",
           "instant": true,
-          "format": "table"
-        },
-        {
+          "format": "table",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "secaudit_report_age_seconds",
-          "legendFormat": "",
+          "expr": "secaudit_report_timestamp_seconds * 1000"
+        },
+        {
           "refId": "B",
           "instant": true,
-          "format": "table"
-        },
-        {
+          "format": "table",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "secaudit_report_partial",
-          "legendFormat": "",
+          "expr": "secaudit_report_age_seconds"
+        },
+        {
           "refId": "C",
           "instant": true,
-          "format": "table"
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_host_enrolled"
+        },
+        {
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "secaudit_report_partial"
         }
       ]
     },

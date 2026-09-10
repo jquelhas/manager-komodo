@@ -898,6 +898,11 @@ _SECURITY_FAMILIES = [
     # alerts.
     ("secaudit_host_enrolled", "gauge", "1 if the host has the audit bundle installed and reporting"),
     ("secaudit_report_age_seconds", "gauge", "Age of the host's last audit report"),
+    # The ABSOLUTE time too, not just the age. An age answers "is it stale"; a wall-clock time
+    # answers "did it run last night", which is the question an operator actually asks of a nightly
+    # timer — and it is the one the freshness table could not answer, because the scan-lifecycle
+    # metrics are all host="manager" (they describe the manager-side pipeline, not the host audits).
+    ("secaudit_report_timestamp_seconds", "gauge", "When the host's last audit ran (epoch seconds)"),
     ("secaudit_report_partial", "gauge", "1 if the host's last report was cut short"),
     ("secaudit_host_step_error", "gauge", "1 if a scanner step failed on the host"),
     ("secaudit_tool_version_info", "gauge", "Installed scanner version, as a label"),
@@ -1089,6 +1094,7 @@ def security_metrics_text():
         end = (rec("end") or [{}])[-1]
         if meta.get("ts"):
             add("secaudit_report_age_seconds", lbl(host=host), int(time.time() - meta["ts"]))
+            add("secaudit_report_timestamp_seconds", lbl(host=host), int(meta["ts"]))
         add("secaudit_report_partial", lbl(host=host), 0 if end.get("ok") else 1)
         for r in rec("tool"):
             add("secaudit_tool_version_info",
