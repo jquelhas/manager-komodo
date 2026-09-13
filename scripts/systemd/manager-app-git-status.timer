@@ -1,0 +1,14 @@
+[Unit]
+Description=Check app git drift every 15 minutes
+
+[Timer]
+# Every 15 minutes. The host half of the comparison is only as fresh as Komodo's own cache refresh
+# (resource_poll_interval, 5 minutes by default), so polling faster than that buys nothing; and the
+# question "is this host behind?" is one nobody needs answered to the second.
+OnCalendar=*:0/15
+# Keeps the GitHub call off the exact quarter-hour, where every other scheduler on the internet is.
+RandomizedDelaySec=90
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -22,3 +22,8 @@ var/secaudit/
 # resource can be recreated verbatim. Operational state, not source: while a resource still
 # exists, read/ExportResourcesToToml regenerates it on demand.
 var/komodo-resource-backups/
+
+# Last verdict of scripts/app-git-status.sh, per host. Derived state: the authority is the Komodo
+# Stack description/tag the script writes, and the next run rebuilds this file from scratch. Kept
+# on disk so a future exporter can turn it into a metric without re-asking GitHub.
+var/app-git-status.json
