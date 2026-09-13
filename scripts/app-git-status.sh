@@ -236,9 +236,14 @@ while read -r stack; do
   tag_names="$(jq -r --argjson all "$(kapi read/ListTags '{}')" \
     '($all | map({key: ._id["$oid"], value: .name}) | from_entries) as $m
      | .tags[]? | $m[.] // empty' <<<"$cfg" 2>/dev/null || true)"
-  new_tags="$(printf '%s\n' "$tag_names" | grep -v '^git-behind$' | grep -v '^$' || true)"
-  [ "$tag_behind" = 1 ] && new_tags="$(printf '%s\ngit-behind' "$new_tags")"
-  tags_json="$(printf '%s\n' "$new_tags" | grep -v '^$' | jq -R . | jq -sc .)"
+  # Done entirely in jq, with no `grep` in the pipeline: when a host becomes current and carried no
+  # other tag, the resulting list is EMPTY, and a grep that matches nothing exits 1 -- which under
+  # `set -euo pipefail` killed the whole run at the first up-to-date host, before it wrote anything
+  # and before it reached the remaining hosts. jq returns an empty array happily.
+  add_tag='[]'; [ "$tag_behind" = 1 ] && add_tag='["git-behind"]'
+  tags_json="$(printf '%s\n' "$tag_names" \
+    | jq -R 'select(length > 0)' \
+    | jq -sc --argjson add "$add_tag" '. - ["git-behind"] + $add')"
 
   current_desc="$(jq -r '.description // ""' <<<"$cfg")"
   new_desc="$(compose_description "$verdict" "$current_desc")"
