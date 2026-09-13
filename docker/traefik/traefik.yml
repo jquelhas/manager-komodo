@@ -45,6 +45,16 @@ certificatesResolvers:
       caCertificates:
         - /certs/step-ca-root.crt
       tlsChallenge: {}   # step-ca valida via TLS-ALPN-01 no websecure-internal (mais tarde)
+      # step-ca issues 24h certificates; Traefik defaults to 2160 (90 days). The value is used
+      # ONLY to derive the renewal schedule (getCertificateRenewDurations), and the default lands
+      # on "renew when < 30 days remain, retry once every 24 hours" -- so the single daily attempt
+      # fired seconds before expiry (measured 2026-09-12: renewed 23:06:52, expiry 23:07:01), and
+      # ONE failed attempt would leave every *.apps.internal on an expired certificate for a full
+      # day. At 24 the schedule becomes "renew when < 6 hours remain, retry every 10 minutes":
+      # six hours of margin and ~36 attempts instead of one.
+      # Keep this number equal to the lifetime step-ca actually issues (ACME provisioner
+      # defaultTLSCertDuration in its ca.json) -- raising one without the other re-narrows the margin.
+      certificatesDuration: 24
 
 providers:
   docker:
