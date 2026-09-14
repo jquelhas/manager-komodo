@@ -41,7 +41,23 @@ database:
 dns:
   magic_dns: true
   base_domain: apps.internal
-  override_local_dns: true
+  # FALSE = split DNS: só o que está sob base_domain (incluindo os extra_records abaixo) vai ao
+  # 100.100.100.100; todo o resto fica com o resolver próprio da máquina. É o que se quer num
+  # portátil de operador, que tem o seu DNS de casa/escritório e não o deve perder por estar ligado
+  # à mesh.
+  #
+  # O mapeamento não é óbvio, está em hscontrol/types/config.go (dnsToTailcfgDNS):
+  #   true  -> nameservers.global vai para cfg.Resolvers         = assume TODO o DNS do cliente
+  #   false -> nameservers.global vai para cfg.FallbackResolvers = só se o SO não tiver nenhum
+  # Em qualquer dos casos o MagicDNS (cfg.Proxied) continua a tratar o base_domain, por isso
+  # *.apps.internal resolve na mesma. No systemd-resolved a diferença vê-se em `resolvectl status`:
+  # com true o link tailscale0 leva o domínio de routing "~." (catch-all), com false leva só
+  # "apps.internal".
+  #
+  # Seguro para os hosts: manager, segcore-demo e segcore-host1 correm todos systemd-resolved com
+  # resolver próprio no link (verificado 2026-09-14), e os containers nunca usaram MagicDNS -- é
+  # por isso que o step-ca precisa dos extra_hosts no docker-compose.yml.
+  override_local_dns: false
   nameservers:
     global:
       - 1.1.1.1
