@@ -62,8 +62,15 @@ dns:
     global:
       - 1.1.1.1
       - 1.0.0.1
-  search_domains:
-    - apps.internal
+  # VAZIO DE PROPÓSITO. O base_domain já entra sozinho na lista de search domains que vai para o
+  # cliente -- o Headscale faz (hscontrol/types/config.go, dnsToTailcfgDNS):
+  #     cfg.Domains = []string{dns.BaseDomain}
+  #     cfg.Domains = append(cfg.Domains, dns.SearchDomains...)
+  # Declarar "apps.internal" aqui outra vez duplicava-o, e via-se no cliente: o
+  # `tailscale dns status` listava "apps.internal" duas vezes em Search Domains (2026-09-14).
+  # Era inofensivo, mas não há razão para o manter. Acrescentar aqui apenas domínios de pesquisa
+  # ADICIONAIS, que não o base_domain.
+  search_domains: []
   # Registos de serviço → IP do manager (100.64.0.1). Todos os serviços de gestão vivem no
   # manager atrás do entrypoint interno do Traefik. Acrescentar aqui à medida que sobem.
   extra_records:
