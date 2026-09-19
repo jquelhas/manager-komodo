@@ -57,11 +57,53 @@ dns:
   # Seguro para os hosts: manager, segcore-demo e segcore-host1 correm todos systemd-resolved com
   # resolver próprio no link (verificado 2026-09-14), e os containers nunca usaram MagicDNS -- é
   # por isso que o step-ca precisa dos extra_hosts no docker-compose.yml.
+  #
+  # CHECK THIS PER HOST, not once for the fleet. "Has a resolver on the link" is what makes the
+  # split safe, and it is exactly what nobody re-checks after a reinstall or a DHCP change. The
+  # check is `resolvectl status` on the host: the physical link must carry DNS servers of its own.
+  # A host that lost them does not fail loudly -- it quietly falls through to the fallback below.
   override_local_dns: false
   nameservers:
+    # OVH's resolver, NOT 1.1.1.1/1.0.0.1. Those are unreachable for DNS from this fleet, and a
+    # fallback that cannot answer is worse than no fallback: it turns "this node has no resolver"
+    # into SERVFAIL on every public name.
+    #
+    # WHY. There is no host firewall; the external OVH firewall is the authoritative gate (see
+    # security/baseline/ports.toml) and it is STATELESS, with the allowlist 443/tcp, 41641/udp,
+    # 60022/tcp. A public resolver answers over UDP to an ephemeral port, which is not on that
+    # list, so the reply is dropped. The resolver is not blocked and the host is not offline --
+    # only the UDP return path is gone. Measured from the manager, 2026-09-19:
+    #
+    #   1.1.1.1              ping OK, TCP/53 NOERROR, HTTPS 301, but UDP/53 times out
+    #   1.0.0.1, 8.8.8.8, 9.9.9.9, 208.67.222.222    UDP/53 times out
+    #   213.186.33.99 (OVH)  UDP/53 answers
+    #
+    # What it cost before it was found: tailscaled forwards to these resolvers over UDP, so
+    # `dig @100.100.100.100 registry-1.docker.io` returned SERVFAIL. A node that fell back to the
+    # mesh for a public name had no public DNS at all, and `docker pull` on it failed with
+    # "lookup registry-1.docker.io on 127.0.0.53:53: server misbehaving" -- which the app's
+    # scripts/update.sh reported as an invalid domain configuration, pointing the operator at the
+    # wrong file entirely (segcore-demo, 2026-09-19).
+    #
+    # Reached only by a client with NO resolver of its own, because override_local_dns is false
+    # above. An operator laptop outside OVH keeps its own DNS and never lands here; if one ever
+    # does, 213.186.33.99 is reachable from OVH networks only, so it fails visibly instead of
+    # silently. Changing provider means changing this line -- it is not a public resolver.
+    #
+    # DO NOT TREAT THIS AS A SAFETY NET. Measured on the manager after this value was changed and
+    # confirmed delivered (`sudo tailscale debug netmap` shows FallbackResolvers = 213.186.33.99):
+    # a direct `dig @100.100.100.100 example.com` still returns SERVFAIL. `tailscale dns status`
+    # explains why -- "reading the system DNS configuration is not supported on this platform", so
+    # the client never concludes the OS is resolver-less and never engages the fallback. With
+    # cfg.Resolvers empty (which is what override_local_dns: false buys us), MagicDNS answers
+    # apps.internal and SERVFAILs everything else, whatever is written here.
+    #
+    # So this line fixes a value that could never have worked; it does not make the mesh a usable
+    # resolver of last resort. The load-bearing requirement is the one stated above
+    # override_local_dns: every host keeps a working resolver on its own physical link. A host
+    # that loses it has no public DNS, and no setting in this file will save it.
     global:
-      - 1.1.1.1
-      - 1.0.0.1
+      - 213.186.33.99
   # VAZIO DE PROPÓSITO. O base_domain já entra sozinho na lista de search domains que vai para o
   # cliente -- o Headscale faz (hscontrol/types/config.go, dnsToTailcfgDNS):
   #     cfg.Domains = []string{dns.BaseDomain}
