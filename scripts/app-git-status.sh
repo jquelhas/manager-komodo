@@ -13,10 +13,22 @@
 #   the HOST half   the Stack's `config_files` track `.git/HEAD` and `.git/refs/heads/<branch>`.
 #                   Those are ordinary files under `run_directory`, and periphery reads whatever
 #                   path it is given (bin/periphery/src/api/compose.rs, no whitelist), so the
-#                   host's current commit arrives in `info.remote_contents` on every cache
-#                   refresh -- every `resource_poll_interval`, 5 minutes by default. No agent on
-#                   the host, no SSH, no new port. A bare-string `config_files` entry defaults to
+#                   host's current commit arrives in `info.remote_contents`. No agent on the host,
+#                   no SSH, no new port. A bare-string `config_files` entry defaults to
 #                   `StackFileRequires::None`, so tracking them changes no deploy decision.
+#
+#                   THIS SCRIPT REFRESHES THAT CACHE ITSELF, and must: waiting for the periodic
+#                   resource poll does not work. Measured on 2026-09-19 -- both hosts deployed
+#                   successfully (104 and 108 commits pulled, every container rebuilt), and 18
+#                   minutes later `read/GetStack` still served the pre-deploy snapshot for both.
+#                   Not just the refs: the cached `docker-compose.yml` still matched the old
+#                   commit and differed from the new one by 39 lines. The deploy takes its own
+#                   snapshot BEFORE running `pre_deploy`, which is where the `git pull` happens,
+#                   so the cache ends up holding the state the host was in just before it
+#                   updated -- permanently one deploy behind. Without the refresh below, every
+#                   host reads as `git-behind` for as long as nothing else refreshes it, and it
+#                   says so loudest in the minutes right after a deploy, which is exactly when
+#                   somebody is looking at the Stacks table.
 #
 #   the REMOTE half this script asks GitHub where the branch actually is.
 #
@@ -26,7 +38,9 @@
 #
 # Usage (on the MANAGER, as the operator, or from manager-app-git-status.timer):
 #   scripts/app-git-status.sh                  check every host and write the verdicts
-#   scripts/app-git-status.sh --dry-run        print what it would write, touch nothing
+#   scripts/app-git-status.sh --dry-run        print the verdicts, write none of them back
+#                                              (still refreshes the Komodo cache -- otherwise a
+#                                               dry run answers from staler data than a real one)
 #   scripts/app-git-status.sh --only segcore-demo
 #
 # Env (from .env or the environment):
@@ -147,6 +161,12 @@ checked=0; behind=0
 while read -r stack; do
   [ -n "$stack" ] || continue
   [ -n "$ONLY" ] && [ "$ONLY" != "$stack" ] && continue
+
+  # Ask periphery to re-read the tracked files NOW. Non-fatal on purpose: if this call fails or
+  # Komodo renames it, the verdict falls back to whatever the cache holds, which is the old
+  # behaviour -- degraded, not broken. See the note on the HOST half at the top.
+  kapi write/RefreshStackCache "$(jq -nc --arg s "$stack" '{stack:$s}')" >/dev/null 2>&1 \
+    || warn "$stack: could not refresh the Komodo cache -- reading whatever it already holds"
 
   cfg="$(kapi read/GetStack "$(jq -nc --arg s "$stack" '{stack:$s}')")"
 
