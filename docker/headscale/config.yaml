@@ -58,10 +58,37 @@ dns:
   # resolver próprio no link (verificado 2026-09-14), e os containers nunca usaram MagicDNS -- é
   # por isso que o step-ca precisa dos extra_hosts no docker-compose.yml.
   #
-  # CHECK THIS PER HOST, not once for the fleet. "Has a resolver on the link" is what makes the
-  # split safe, and it is exactly what nobody re-checks after a reinstall or a DHCP change. The
-  # check is `resolvectl status` on the host: the physical link must carry DNS servers of its own.
-  # A host that lost them does not fail loudly -- it quietly falls through to the fallback below.
+  # A CHANGE IN THIS dns BLOCK PROPAGATES ON ITS OWN, BUT VERIFY IT PER HOST. Recreating this
+  # container is what makes headscale serve the new config, and a connected node applies it
+  # without being touched -- segcore-host1 picked up the 2026-09-14 split with a tailscaled that
+  # had been running since 2026-09-09 and was never restarted. So no restart is required, and
+  # asking for one fleet-wide would be cargo cult.
+  #
+  # What DOES happen is that a host can get stuck on the old config and nothing reports it. Five
+  # days after the split, segcore-demo still had the catch-all, while the manager and host1 had
+  # not:
+  #
+  #   Link 4 (tailscale0)  DNS Domain: apps.internal ~.
+  #   Link 2 (eno1)        DNS Servers: 213.186.33.99
+  #
+  # It was not a stale netmap: recreating headscale on 2026-09-19 made all four nodes reconnect
+  # and re-fetch, and this host kept "~." anyway. `systemctl restart tailscaled` on the host
+  # cleared it and DNS came back at once. Why that one node did not apply it is NOT established
+  # -- do not write a mechanism here that has not been proven.
+  #
+  # Note how it fails, because it is not the obvious way. The host's own resolver was present and
+  # healthy throughout -- it was simply never consulted. "~." is an EXPLICIT routing domain and
+  # outranks eno1's plain +DefaultRoute, so systemd-resolved sent every query to 100.100.100.100,
+  # tailscaled forwarded to 1.1.1.1, and the UDP reply was dropped by the firewall (see
+  # nameservers below). Result: SERVFAIL on every public name, on a host whose `resolvectl status`
+  # shows a working DNS server one link above. From the manager it looks exactly like a host with
+  # no resolver at all, which is the wrong thing to go and fix.
+  #
+  # VERIFY ON THE HOST, per node, after any change here -- there is no way to see it from here:
+  #   resolvectl status | sed -n '/Link.*tailscale0/,/^$/p'   # DNS Domain must NOT contain "~."
+  #   resolvectl query <any public name>                      # must answer, via the physical link
+  #   resolvectl query komodo.apps.internal                   # and MagicDNS must still work
+  # A node still showing "~." is the case above: restart tailscaled on THAT host, not everywhere.
   override_local_dns: false
   nameservers:
     # OVH's resolver, NOT 1.1.1.1/1.0.0.1. Those are unreachable for DNS from this fleet, and a
@@ -100,8 +127,11 @@ dns:
     #
     # So this line fixes a value that could never have worked; it does not make the mesh a usable
     # resolver of last resort. The load-bearing requirement is the one stated above
-    # override_local_dns: every host keeps a working resolver on its own physical link. A host
-    # that loses it has no public DNS, and no setting in this file will save it.
+    # override_local_dns: every host keeps a working resolver on its own physical link AND
+    # actually reaches it, which is a second, separate thing -- segcore-demo had 213.186.33.99 on
+    # eno1 throughout the 2026-09-19 outage and still had no DNS, because tailscale0 was still
+    # claiming "~.". No setting in this file saves a host in that state; only restarting its
+    # tailscaled does.
     global:
       - 213.186.33.99
   # VAZIO DE PROPÓSITO. O base_domain já entra sozinho na lista de search domains que vai para o
