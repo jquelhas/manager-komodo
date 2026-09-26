@@ -148,8 +148,30 @@ echo "\${WANT}  /tmp/setup-periphery.py" | sha256sum -c - >/dev/null \\
 # running the installer on purpose. If the installer rewrites it, put ours back -- otherwise the
 # Core loses the host.
 BK="\$(mktemp)"; [ -f "\$CFG" ] && cp -a "\$CFG" "\$BK" || true
-python3 /tmp/setup-periphery.py --version "\$TARGET" --connect-as "\$(hostname)"
-rm -f /tmp/setup-periphery.py
+
+# Keep a copy of the binary, because upstream's installer deletes it BEFORE fetching the
+# replacement (setup-periphery.py, download_binary: os.remove(bin_path) and only then the curl).
+# A failed download therefore does not leave the old agent running -- it leaves NO agent, and
+# periphery is the only channel the manager has to this host, so the repair becomes SSH
+# break-glass. That is the risk this script's own header names, and until now nothing here
+# actually covered it. Happened on mfseguros, 2026-09-26: the host went to NotOk with
+# "/usr/local/bin/periphery: not found" and had to be restored by hand.
+BIN=/usr/local/bin/periphery
+BINBK="\$(mktemp)"; [ -f "\$BIN" ] && cp -a "\$BIN" "\$BINBK" || true
+
+if ! python3 /tmp/setup-periphery.py --version "\$TARGET" --connect-as "\$(hostname)"; then
+  rm -f /tmp/setup-periphery.py
+  if [ -s "\$BINBK" ] && [ ! -s "\$BIN" ]; then
+    echo "installer failed and left no binary — restoring the previous one" >&2
+    cp -a "\$BINBK" "\$BIN"; chmod +x "\$BIN"
+    [ -s "\$BK" ] && { cp -a "\$BK" "\$CFG"; chmod 600 "\$CFG"; }
+    systemctl restart periphery || true
+    echo "the upgrade did NOT happen; the host is back on its previous version" >&2
+  fi
+  rm -f "\$BK" "\$BINBK"
+  exit 1
+fi
+rm -f /tmp/setup-periphery.py "\$BINBK"
 if [ -s "\$BK" ] && ! cmp -s "\$BK" "\$CFG"; then
   echo "installer changed periphery.config.toml — restoring ours"
   cp -a "\$BK" "\$CFG"; chmod 600 "\$CFG"
