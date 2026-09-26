@@ -33,7 +33,15 @@ set -euo pipefail
 # ---- Defaults (this control plane) ----
 LOGIN_SERVER="${LOGIN_SERVER:-${KOMODO_LOGIN_SERVER:-https://komodo.segcore.eu}}"
 CORE_PUBLIC_KEY="${CORE_PUBLIC_KEY:-${KOMODO_CORE_PUBKEY:-MCowBQYDK2VuAyEAq4h7qO1p9pLMSxUgADHXY8IYtUnhcTwpLUyiNiuT2y8=}}"
-PERIPHERY_VERSION="${PERIPHERY_VERSION:-v2.3.2}"
+# Must match the Core (docker-compose.yml, ghcr.io/moghtech/komodo-core). Bumping the Core without
+# bumping this leaves every NEWLY onboarded host behind the fleet, and nothing says so until you
+# compare `info.version` per server against read/GetVersion. Happened twice: v2.2.0 against a 2.3.2
+# Core (2026-09-09, see add-host.sh) and v2.3.2 against a 2.3.3 Core (mfseguros, 2026-09-26, while
+# demo and host1 were already on 2.3.3). scripts/upgrade-periphery.sh does NOT have this problem --
+# it derives the target from the Core at runtime -- so the drift only ever shows up on new hosts.
+#   check:  komodo read/ListServers -> .info.version, against read/GetVersion
+#   fix a host already onboarded behind: scripts/upgrade-periphery.sh --host <name>
+PERIPHERY_VERSION="${PERIPHERY_VERSION:-v2.3.3}"
 SETUP_URL="${SETUP_URL:-https://raw.githubusercontent.com/moghtech/komodo/${PERIPHERY_VERSION}/scripts/setup-periphery.py}"
 KOMODO_ROOT="${KOMODO_ROOT:-/etc/komodo}"
 # Periphery (and thus deploys) run as this user, in the docker group — so pull/on_pull files are
