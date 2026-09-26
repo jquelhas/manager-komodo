@@ -413,6 +413,27 @@ rm -f "$TMP_SETUP"
 # Keeps the same /etc/komodo config + Noise keys (no Komodo re-registration). Needs docker access.
 if id "$DEPLOY_USER" >/dev/null 2>&1; then
   info "Configuring Periphery to run as '${DEPLOY_USER}' (docker group)..."
+  # STOP THE ROOT INSTANCE BEFORE THE CHOWN. The setup script above does not just install the unit,
+  # it enables and starts it -- as root, because the drop-in below does not exist yet. Periphery
+  # generates its Noise keypair at ${KOMODO_ROOT}/keys/periphery.key on first start, so that file
+  # appears at some point AFTER the setup script returns. Chowning while it is still coming up is a
+  # race, and losing it is silent: the key stays root:root 0600, the restart further down comes up
+  # as ${DEPLOY_USER}, and periphery panics on startup with
+  #     Failed to read private key at "/etc/komodo/keys/periphery.key"
+  #     Caused by: Permission denied (os error 13)
+  # which is not obviously a permissions problem from `systemctl status` -- it exits 1 in under
+  # 100ms and systemd gives up after five tries with "Start request repeated too quickly".
+  #
+  # The damage is not limited to the service. The Verify block below `exit 1`s on an inactive
+  # periphery, which is BEFORE the callback to the control plane, so the host ends up on the mesh
+  # but with no Server in Komodo and the provisioning link left unburned in the store -- a
+  # half-onboarded host that looks like a failed mesh join and is not. Seen on mfseguros,
+  # 2026-09-26.
+  #
+  # Stopping first makes the chown total: nothing is writing under $KOMODO_ROOT while it runs, and
+  # the start further down is then the first time periphery runs as ${DEPLOY_USER}, over files it
+  # already owns.
+  systemctl stop periphery >/dev/null 2>&1 || true
   usermod -aG docker "$DEPLOY_USER"
   chown -R "$DEPLOY_USER":"$DEPLOY_USER" "$KOMODO_ROOT"    # periphery-as-user writes ssl/state/keys here
   install -d -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_PATH"  # Komodo clones here as the deploy user
