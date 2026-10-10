@@ -17,13 +17,14 @@
 # rather than a surprise alert.
 #
 # FIELDS
-#   kind    port | tls | nuclei | trivy | bench | lynis
+#   kind    port | tls | nuclei | image | bench | lynis
 #   host    exact Komodo Server name, "manager", or an fnmatch glob ("*", "segcore-*")
 #   match   kind-specific key, fnmatch glob:
 #             port    <perspective>/<proto>/<port>     e.g. "local/tcp/60022", "public/tcp/*"
 #             tls     <port>/<finding-id>
 #             nuclei  <template-id>  or  <template-id>@<path>
-#             trivy   <image>/<CVE>  (glob "<image>/*")
+#             image   <image reference as it appears in secaudit_running_image_age_seconds>,
+#                     e.g. "ghcr.io/ferretdb/ferretdb:2.7.0" or the glob "smallstep/step-ca:*"
 #             bench   <check-id>     e.g. "4.1"
 #             lynis   <test-id>      e.g. "SSH-7408"
 #   expires YYYY-MM-DD, mandatory, capped by SECAUDIT_MAX_SUPPRESSION_DAYS
