@@ -43,3 +43,26 @@ schema = 1
 # reason  = "SSH break-glass on 60022, gated by the external firewall allowlist; documented posture."
 # owner   = "jferreira@wavecom.pt"
 # ticket  = "OPS-142"
+
+# The three images backing running containers on the manager are each already the newest release
+# their upstream has published (checked 2026-10-10 against the GitHub releases API), so there is no
+# upgrade to take and `docker pull` on the same tag fetches nothing new. The finding itself is real
+# -- the published image was built that long ago and has had no base-layer patch since -- which is
+# why this is an accepted risk with a date rather than a rule change. Revisit at expiry: if
+# upstream has cut a release by then, take it instead of renewing.
+
+[[suppress]]
+kind    = "image"
+host    = "manager"
+match   = "ghcr.io/ferretdb/*"
+expires = "2027-01-31"
+reason  = "FerretDB 2.7.0 and its postgres-documentdb are the newest upstream releases (checked 2026-10-10); no rebuild exists to pull. Komodo cannot use MongoDB on this kernel, so the image is not optional."
+owner   = "jferreira@wavecom.pt"
+
+[[suppress]]
+kind    = "image"
+host    = "manager"
+match   = "smallstep/step-ca:*"
+expires = "2027-01-31"
+reason  = "step-ca 0.30.2 is the newest upstream release (checked 2026-10-10); no rebuild exists to pull."
+owner   = "jferreira@wavecom.pt"
