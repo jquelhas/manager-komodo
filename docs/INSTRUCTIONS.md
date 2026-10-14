@@ -652,9 +652,7 @@ reporte.
 
 ```bash
 # 1. the deploy resource. NOTE: DeleteRepo deletes the directory at `path` ON THE HOST, and
-#    DeleteStack does not. For an offboard that is what you want; if you are removing the resource
-#    but KEEPING the machine, first point `path` at a throwaway directory and read it back to
-#    confirm — see the 2026-09-08 correction in docs/DESIGN.md.
+#    DeleteStack does not. For an offboard that is what you want.
 #    (write/DeleteRepo / write/DeleteStack, or the UI)
 
 # 2. the Komodo Server — stops Komodo's own alerts and the metrics auto-discovery
@@ -667,6 +665,42 @@ docker exec manager-headscale headscale nodes delete -i <node-id> --force
 # 4. accept the coverage reduction, or discovery stays degraded
 rm -f security/state/targets.json && ./scripts/security-discover.sh
 ```
+
+### Deleting a Repo while KEEPING the machine
+
+Not the same operation, and the obvious way destroys the application. Verified in Komodo v2.3.3,
+not inferred:
+
+- `bin/core/src/resource/repo.rs`, `pre_delete`, sends periphery `DeleteRepo { name: config.path }`
+- `bin/periphery/src/api/git.rs:232` does `fs::remove_dir_all(root.join(name))`, and the comment
+  right above it says a custom clone path arrives absolute, so the join resolves to just that path
+
+So deleting a Repo whose `path` is `/opt/SEGCORE` runs `remove_dir_all("/opt/SEGCORE")` on the host:
+the code, the `.env`, the logs. Worse, `pre_delete` logs the failure and returns `Ok(())` anyway, so
+a removal that stops half way — `remove_dir_all` gives up at the first permission error, and
+containers leave root-owned files behind — leaves the directory partly destroyed AND the Repo gone,
+with nothing to retry. That is what the three `DeleteRepo success=false` entries in this fleet's
+Komodo history are.
+
+**Clear `server_id` on the Repo first, then delete it.** The first lines of `pre_delete` are
+
+```rust
+if repo.config.server_id.is_empty() {
+  return Ok(());
+}
+```
+
+so with no server the Core never contacts periphery and no file is touched — guaranteed by the code
+path, not by the path happening to be harmless. Read it back to confirm it is empty before deleting.
+
+Pointing `path` at a directory that does not exist also works (the `remove_dir_all` fails, is logged,
+the Repo is deleted anyway), but that is the right outcome by accident rather than by design.
+
+Afterwards, prove the directory survived without going to the host: the Stack's `config_files` track
+`.git/HEAD` under the same directory, so `scripts/app-git-status.sh --dry-run` reporting a commit for
+that host is a live read off it. "sem dados de git" would mean it is gone.
+
+Done this way on `segcore-mfseguros`, 2026-10-14.
 
 **Step 4 is not optional if the host was in `targets.json`.** `security-discover.sh` refuses to
 shrink the target list on its own: fewer targets than last time means it keeps the previous cache
