@@ -218,6 +218,9 @@ services:
       # in .env to make it 503 during an incident without touching the router or the code.
       MAINTENANCE_API: "${MAINTENANCE_API:-on}"
       MAINTENANCE_MAX_MINUTES: "${MAINTENANCE_MAX_MINUTES:-45}"
+      # How long the silence outlives the deploy, so the alert has time to resolve before it is
+      # uncovered. 0 restores the pre-2026-10-14 behaviour of expiring it the instant update.sh ends.
+      MAINTENANCE_END_GRACE_MINUTES: "${MAINTENANCE_END_GRACE_MINUTES:-3}"
       MAINTENANCE_HMAC_KEY: "${MAINTENANCE_HMAC_KEY:-}"
     volumes:
       - ./provisioning/server.py:/app/server.py:ro

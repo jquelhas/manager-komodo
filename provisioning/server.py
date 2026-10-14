@@ -95,6 +95,8 @@ MAINTENANCE_API = os.environ.get("MAINTENANCE_API", "on").strip().lower() not in
 # update is ~15 min, so this is ample -- and it is what stops an update.sh that dies mid-run from
 # leaving the monitoring blind: /end is the prompt cleanup, this is the safety net.
 MAINTENANCE_MAX_MINUTES = int(os.environ.get("MAINTENANCE_MAX_MINUTES", "45"))
+# How long the silence outlives the deploy. See maintenance_silence_end for why it is not zero.
+MAINTENANCE_END_GRACE_MINUTES = int(os.environ.get("MAINTENANCE_END_GRACE_MINUTES", "3"))
 # Distinct from the `komodo` marker used by the Deno silence Actions, so the two mechanisms can
 # coexist during the migration without expiring each other's silences.
 MAINTENANCE_CREATED_BY = "maintenance-api"
@@ -513,8 +515,9 @@ def _maintenance_matchers(host):
 
 
 def _maintenance_ours(host):
-    """Active silences this endpoint created for `host`. Matched on creator + the host matcher, so
-    an operator's hand-made silence is never touched."""
+    """Active silences this endpoint created for `host`, as whole objects -- the grace-period
+    update in /end re-POSTs them and Alertmanager wants every field back. Matched on creator + the
+    host matcher, so an operator's hand-made silence is never touched."""
     st, body = _am("GET", "/api/v2/silences")
     if st != 200 or not isinstance(body, list):
         return None
@@ -525,8 +528,9 @@ def _maintenance_ours(host):
         if (sil.get("status") or {}).get("state") == "expired":
             continue
         if any(m.get("name") == "host" and m.get("value") == host for m in sil.get("matchers") or []):
-            out.append(sil.get("id"))
-    return [i for i in out if i]
+            if sil.get("id"):
+                out.append(sil)
+    return out
 
 
 def maintenance_silence_start(host, minutes):
@@ -539,8 +543,8 @@ def maintenance_silence_start(host, minutes):
     existing = _maintenance_ours(host)
     if existing is None:
         return 502, {"ok": False, "error": "alertmanager unreachable"}
-    for sid in existing:
-        _am("DELETE", f"/api/v2/silence/{sid}")
+    for sil in existing:
+        _am("DELETE", f"/api/v2/silence/{sil['id']}")
     now = datetime.datetime.now(datetime.timezone.utc)
     ends = now + datetime.timedelta(minutes=minutes)
     fmt = "%Y-%m-%dT%H:%M:%S.000Z"
@@ -561,18 +565,56 @@ def maintenance_silence_start(host, minutes):
 
 
 def maintenance_silence_end(host):
-    """Expire this host's maintenance silences. Idempotent: none active is success with expired=0,
-    not 404 -- update.sh calls this unconditionally, and a 404 in every clean deploy's log is noise
-    that teaches people to stop reading the log."""
+    """Taper this host's maintenance silence off instead of expiring it on the spot.
+
+    WHY NOT A PLAIN DELETE, which is what this did until 2026-10-14. update.sh calls /end the
+    moment the script finishes, but the service it just restarted is not yet scraped as healthy:
+    SegcoreBackendDown is `up{job="gims-backend"} == 0` with `for: 2m`, so the alert is still
+    firing while the backend comes up. Expiring the silence at that instant hands Alertmanager a
+    firing alert with nothing covering it, and an e-mail goes out about the deploy that just
+    SUCCEEDED -- which is the kind of noise that teaches people to filter the alerts away.
+
+    Seen on segcore-demo, 2026-10-14: the deploy's silence ran 08:33 -> 08:36 and the last firing
+    sample of SegcoreBackendDown is 08:36, the exact minute it was lifted. The 09:33 deploy on the
+    same host came through clean, so it is a race on the tail of the deploy, not a constant.
+
+    So the silence is SHORTENED to now + MAINTENANCE_END_GRACE_MINUTES rather than deleted. The
+    tail stays covered, and it still goes away on its own with no second call from the host.
+
+    The cost, stated plainly: a backend that is genuinely down when a deploy ends takes that much
+    longer to reach you, on top of the 2m the rule already waits.
+
+    Idempotent: none active is success with expired=0, not 404 -- update.sh calls this
+    unconditionally, and a 404 in every clean deploy's log is noise that teaches people to stop
+    reading the log.
+    """
     ours = _maintenance_ours(host)
     if ours is None:
         return 502, {"ok": False, "error": "alertmanager unreachable"}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ends = now + datetime.timedelta(minutes=MAINTENANCE_END_GRACE_MINUTES)
+    fmt = "%Y-%m-%dT%H:%M:%S.000Z"
     expired = 0
-    for sid in ours:
-        st, _ = _am("DELETE", f"/api/v2/silence/{sid}")
-        if 200 <= st < 300:
-            expired += 1
-    return 200, {"ok": True, "host": host, "expired": expired}
+    for sil in ours:
+        # POST carrying an existing id UPDATES that silence; Alertmanager replaces it wholesale,
+        # so every field has to be sent back, not just the one being changed.
+        st, _ = _am("POST", "/api/v2/silences", {
+            "id": sil["id"],
+            "matchers": sil.get("matchers") or _maintenance_matchers(host),
+            "startsAt": sil.get("startsAt") or now.strftime(fmt),
+            "endsAt": ends.strftime(fmt),
+            "createdBy": MAINTENANCE_CREATED_BY,
+            "comment": sil.get("comment") or f"deploy {host}",
+        })
+        if not (200 <= st < 300):
+            # Fail towards the old behaviour. Leaving it running to its full length (up to
+            # MAINTENANCE_MAX_MINUTES) would leave the host quietly unmonitored, which is worse
+            # than the e-mail this whole function exists to avoid.
+            _am("DELETE", f"/api/v2/silence/{sil['id']}")
+        expired += 1
+    return 200, {"ok": True, "host": host, "expired": expired,
+                 "grace_minutes": MAINTENANCE_END_GRACE_MINUTES,
+                 "ends_at": ends.strftime(fmt)}
 
 
 # --- Per-container metrics exporter: reuse the stats Komodo/Periphery already collects ---
