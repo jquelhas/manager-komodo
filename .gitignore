@@ -27,3 +27,4 @@ var/komodo-resource-backups/
 # Stack description/tag the script writes, and the next run rebuilds this file from scratch. Kept
 # on disk so a future exporter can turn it into a metric without re-asking GitHub.
 var/app-git-status.json
+docker/pghero/generated/pghero.yml
