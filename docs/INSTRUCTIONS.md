@@ -67,8 +67,9 @@ files. No `git config safe.directory` hack is needed, and manual `sudo -u ubuntu
 runs don't collide. (If a host predates this, migrate it: `usermod -aG docker ubuntu`,
 `chown -R ubuntu:ubuntu /etc/komodo /opt/SEGCORE`, add the `User=ubuntu` drop-in, restart periphery.)
 
-**Secrets** — nothing to do on the host. They are fleet-wide Komodo Variables, and the host's own
-`JWT_SECRET` is generated into `<HOST>_JWT_SECRET` at registration. The only value left to fill in is
+**Secrets** — nothing to do on the host. Fleet-wide ones are Komodo Variables; the host's own
+`JWT_SECRET` and `DB_PASSWORD` are minted at registration and written as **literals** into that
+host's own `environment` (no Variable is created for them — see §The two keys). The only value left to fill in is
 `PUBLIC_BIND_IP` (the host's public IP), in the Komodo UI on that Repo's `environment` — the deploy
 aborts while it is still `CHANGE_ME`. See §App `.env` management. The `[secrets]` block in
 `/etc/komodo/periphery.config.toml` stays commented out; it exists for a value that must never leave
@@ -94,13 +95,27 @@ Postgres. A host that needs its own value is the exception, handled in its Repo 
 |---|---|---|
 | fleet-wide (the default, secret or not) | Komodo Variable (*Settings → Variables*), from `APPVAR_*`/`APPSECRET_*` | `[[NAME]]` |
 | per host, not sensitive (`LOCAL_BASE_DOMAIN`, `PUBLIC_BIND_IP`) | literal in that Repo's `environment`, edited in the Komodo UI | written directly |
-| per host, exception to a fleet-wide secret | literal in that Repo's `environment`, or a host-specific Variable | `[[HOST1_JWT_SECRET]]` |
+| per host, exception to a fleet-wide secret | literal in that Repo's `environment` | `JWT_SECRET=<the value>` |
 
 ### The two keys
 
-`JWT_SECRET` is **per host**, generated once at onboarding into the Variable `<HOST>_JWT_SECRET` by
-`provisioning/server.py`, and never regenerated — the app `.env` is rewritten on every deploy, so a
-value generated at boot-time-if-missing would change on every deploy and log everyone out. Per host
+`JWT_SECRET` is **per host**, minted once at onboarding by `provisioning/server.py` and written as
+a literal into that host's `environment`, and never regenerated — the app `.env` is rewritten on
+every deploy, so a value generated at boot-time-if-missing would change on every deploy and log
+everyone out.
+
+They are literals and **not** Komodo Variables (decided 2026-10-14). Variables are one flat global
+namespace with no owner, and that cost two incidents: `segcore-mfseguros` was wired to
+`[[HOST1_DB_PASSWORD]]` — another host's secret, which nothing prevented and nothing flagged — and
+four Variables were left stranded by two decommissioned hosts. A literal belongs to one host's
+environment by construction and goes away with it. The cost accepted: `read/GetStack` returns it in
+clear to anyone with read access on that resource, and it lives in the manager's database and
+backup. Here that is one admin account, the app Postgres is reachable only over the mesh, and the
+backup is encrypted.
+
+Hosts onboarded before that date keep their `<HOST>_JWT_SECRET` / `<HOST>_DB_PASSWORD` Variables and
+work unchanged; `scripts/setup-app-env.sh` carries whatever is in an existing `environment` over
+rather than minting a new value, so re-seeding never rotates a live host's secrets. Per host
 because the app backends are public: a shared signing key would let a token minted on one host
 authenticate as admin on every other tenant. Rotating it only ends sessions (the longest token is the
 30-day "remember me"); it destroys no data, **provided `TENANT_CONFIG_KEY` is set**.

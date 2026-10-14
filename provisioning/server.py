@@ -140,10 +140,28 @@ def host_upper(hostname):
 def render_app_env(hostname, mesh_ip):
     """Render the app .env template for one host. Returns "" if there is no template.
 
-    Only substitutes {{MESH_IP}} / {{HOSTNAME}} / {{HOST_UPPER}}: the [[NAME]] placeholders must
-    survive untouched, since Core (Variables / config secrets) and that host's periphery ([secrets])
-    resolve them at deploy time. Any remaining CHANGE_ME is intentional — the on_pull guard refuses
-    to deploy while the .env still has unresolved placeholders.
+    The [[NAME]] placeholders survive untouched: Core (Variables / config secrets) and that host's
+    periphery ([secrets]) resolve them at deploy time. Any remaining CHANGE_ME is intentional --
+    the on_pull guard refuses to deploy while the .env still has unresolved placeholders.
+
+    {{JWT_SECRET}} and {{DB_PASSWORD}} are different: they are MINTED HERE, once, and substituted
+    as literals into this host's environment. Called only from komodo_register_repo, which creates
+    the Repo and never overwrites an existing one, so "once per host" falls out of that and needs
+    no extra bookkeeping. Regenerating either would be destructive -- a new JWT_SECRET logs
+    everyone out, and a new DB_PASSWORD disagrees with the password that host's Postgres cluster
+    was initialised with, locking the app out of its own database.
+
+    LITERALS AND NOT KOMODO VARIABLES, decided 2026-10-14. Variables are one flat global namespace
+    with no owner, and that cost us two real incidents: segcore-mfseguros was wired to
+    [[HOST1_DB_PASSWORD]] -- another host's secret, which nothing prevented and nothing flagged --
+    and four Variables were left stranded by two decommissioned hosts. A literal belongs to exactly
+    one host's environment by construction and goes away with it.
+
+    The trade-off, accepted with eyes open: read/GetStack hands the value over in clear to anyone
+    with read access on that resource, and it is stored in the manager's database and so in its
+    backup. On this control plane that is one admin account, the app host's Postgres is reachable
+    only over the mesh, and the backup is encrypted -- so the exposure this adds is small, and the
+    class of mistake it removes is one we have already made twice.
     """
     try:
         with open(APP_ENV_TEMPLATE, "r", encoding="utf-8") as f:
@@ -154,6 +172,8 @@ def render_app_env(hostname, mesh_ip):
         template.replace("{{MESH_IP}}", mesh_ip)
         .replace("{{HOSTNAME}}", hostname)
         .replace("{{HOST_UPPER}}", host_upper(hostname))
+        .replace("{{JWT_SECRET}}", secrets.token_hex(32))
+        .replace("{{DB_PASSWORD}}", secrets.token_hex(32))
     )
 
 
@@ -224,50 +244,6 @@ def komodo_ensure_tag(name):
     return tid
 
 
-# Secrets that belong to one host, generated here at onboarding as Komodo Variables named
-# <HOST>_<SUFFIX> and referenced from the app .env template as [[{{HOST_UPPER}}_<SUFFIX>]].
-#
-# Generated at onboarding and NEVER regenerated. The app .env is rewritten on every deploy, so a
-# value generated at boot-time-if-missing would change on every deploy — logging everyone out
-# (JWT_SECRET) or, worse, disagreeing with the password the Postgres cluster was initialised with
-# (DB_PASSWORD), which locks the app out of its own database.
-#
-# Per host rather than fleet-wide for different reasons each:
-#   JWT_SECRET   the app backends are PUBLIC, so one shared signing key would let a token minted on
-#                any host authenticate as admin on every other tenant. Safe to differ per host now
-#                that TENANT_CONFIG_KEY carries the at-rest encryption: rotating the signing key ends
-#                sessions but does not make stored ciphertext unreadable.
-#   DB_PASSWORD  the password lives inside the Postgres cluster, not in this file. A fleet-wide value
-#                can only ever be right by luck; per host, the mismatch is impossible by construction.
-HOST_SECRETS = (
-    ("JWT_SECRET", "JWT signing secret"),
-    ("DB_PASSWORD", "Postgres password"),
-)
-
-
-def komodo_ensure_host_secrets(hostname):
-    """Create this host's own secrets as Komodo Variables, once each. Returns (ok, detail)."""
-    made, kept, failed = [], [], []
-    for suffix, label in HOST_SECRETS:
-        var = f"{host_upper(hostname)}_{suffix}"
-        st, resp = komodo_api(
-            "write/CreateVariable",
-            {
-                "name": var,
-                "value": secrets.token_hex(32),
-                "description": f"{label} for {hostname} (generated at onboarding)",
-                "is_secret": True,
-            },
-        )
-        if isinstance(resp, dict) and resp.get("name") == var:
-            made.append(var)
-        elif _exists_err(resp):
-            kept.append(var)      # never overwrite an existing one: the host is already using it
-        else:
-            failed.append(f"{var}: http {st} {str(resp)[:120]}")
-    if failed:
-        return False, "; ".join(failed)
-    return True, f"created {len(made)}, kept {len(kept)}"
 
 
 def komodo_register_repo(server_id, name, mesh_ip=""):
@@ -1604,16 +1580,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             msg = "registered server"
             if role == APP_DEPLOY_ROLE:  # also create the per-host deploy Repo (+ tag)
-                # Before the Repo: its seeded environment references [[<HOST>_JWT_SECRET]] and
-                # [[<HOST>_DB_PASSWORD]], so the Variables have to exist or the first deploy writes
-                # the placeholders through and the on_pull guard aborts it.
-                jok, jdetail = komodo_ensure_host_secrets(name)
-                if not jok:
-                    self.log_error("per-host secret Variables failed: %s", jdetail)
+                # No per-host Variables to create first any more: JWT_SECRET and DB_PASSWORD are
+                # minted by render_app_env and land as literals inside the Repo's own environment,
+                # which CreateRepo writes below. One step instead of two, and nothing global.
                 ok, rdetail = komodo_register_repo(server_id, name, mesh_ip)
                 msg += " + repo" if ok else f" (repo skipped: {rdetail})"
-                if ok and not jok:
-                    msg += " (host secrets NOT created — set them before deploying)"
                 if not ok:
                     self.log_error("CreateRepo failed: %s", rdetail)
             burn(uuid)  # server registered — remove the link

@@ -56,13 +56,23 @@
 # access to another host's Postgres.
 #
 # A host that needs a different value is the EXCEPTION, and is handled in that Repo's Environment in
-# the Komodo UI: replace [[NAME]] with the literal value, or with a host-specific Variable
-# (JWT_SECRET=[[<HOST>_JWT_SECRET]]) to keep it out of read/GetRepo, which returns literals in clear
-# to anyone with read access. Do NOT try to override by putting the same name in the host's periphery
-# [secrets]: Core interpolates first and the periphery never sees it.
+# the Komodo UI: replace [[NAME]] with the literal value. Do NOT give it a host-specific Komodo
+# Variable -- that is the flat global namespace this design moved away from on 2026-10-14, and it
+# is how one host ended up wired to another host's secret. And do NOT try to override by putting
+# the same name in the host's periphery [secrets]: Core interpolates first and the periphery never
+# sees it. If a value must never reach the manager's database at all, periphery [secrets] is the
+# only place for it -- but then nothing here may carry that name.
 #
-# Two values are per host, both generated at onboarding into Komodo Variables <HOST>_JWT_SECRET and
-# <HOST>_DB_PASSWORD (provisioning/server.py) — no manual step, and never regenerated.
+# Two values are per host, both generated at onboarding and written as LITERALS into this host's
+# environment (provisioning/server.py) — no manual step, and never regenerated.
+#
+# Literals and not Komodo Variables, decided 2026-10-14. Variables are one flat global namespace
+# with no owner, which cost us real incidents: nothing stopped segcore-mfseguros from referencing
+# [[HOST1_DB_PASSWORD]], and nothing flagged four Variables left behind by two decommissioned
+# hosts. A literal belongs to exactly one host's environment by construction, and disappears with
+# it. The trade-off accepted: read/GetStack returns it in clear to anyone with read access on that
+# resource, and it lives in the manager's database and therefore in its backup. On this control
+# plane that means the single admin account, and the backup is encrypted.
 #   JWT_SECRET   the app backends are PUBLIC, so a shared signing key would let a token minted on one
 #                host authenticate as admin on every other tenant, over the internet.
 #   DB_PASSWORD  it must match what that host's Postgres cluster was initialised with, so a
@@ -75,7 +85,8 @@
 #   DEFAULT_BACKUP_ENCRYPTION_KEY, WEBHOOK_ALERTAS_TOKEN, SENTRY_DSN_BACKEND, VITE_SENTRY_DSN,
 #   ALERTAS_EMAIL_TO, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY, BACKUP_S3_SECRET_KEY,
 #   BACKUP_S3_ENDPOINT, BACKUP_S3_REGION
-# Plus, per host and created at onboarding: <HOST>_JWT_SECRET, <HOST>_DB_PASSWORD.
+# JWT_SECRET and DB_PASSWORD are NOT in that list: they are per host and written as literals, so
+# they need no Variable and must not be given one.
 
 KOMODO_MANAGED_FILE=do-not-edit-here-edit-the-repo-environment-in-komodo
 
@@ -110,12 +121,12 @@ PUBLIC_BIND_IP=CHANGE_ME
 DB_HOST=postgres
 DB_PORT=5432
 DB_USER=postgres
-# Per host, generated at onboarding into <HOST>_DB_PASSWORD. The password lives inside the Postgres
+# Per host, generated at onboarding and written here as a literal. The password lives inside the Postgres
 # cluster (fixed when it was initialised), not in this file: a fleet-wide value could only ever be
 # right by luck, and being wrong locks the app out of its own database. Generating one per host makes
 # that mismatch impossible. Postgres listens on the mesh IP, but the ACL denies app-host-to-app-host
 # traffic, so this password is not a lateral-movement path between tenants either way.
-DB_PASSWORD=[[{{HOST_UPPER}}_DB_PASSWORD]]
+DB_PASSWORD={{DB_PASSWORD}}
 DB_MASTER_DATABASE=gims_master
 # Read-only role for monitoring (pghero + postgres-exporter). MONITOR_DB_PASSWORD must match the
 # manager's PGHERO_DB_PASSWORD — the manager keeps a single secret for the whole fleet, so this one
@@ -138,12 +149,12 @@ DOCKER_GROUP=1000
 # ================================================================
 # KEYS
 # ================================================================
-# JWT_SECRET signs the API tokens only — per host, generated once at onboarding into the Komodo
-# Variable <HOST>_JWT_SECRET (provisioning/server.py) and never regenerated. Per host because the
+# JWT_SECRET signs the API tokens only — per host, generated once at onboarding and written here
+# as a literal (provisioning/server.py), never regenerated. Per host because the
 # backends are public: a shared signing key would let a token minted on one host authenticate as
 # admin on every other tenant. Rotating it only ends sessions (longest token is the 30d "remember
 # me"); it destroys no data, PROVIDED TENANT_CONFIG_KEY below is set.
-JWT_SECRET=[[{{HOST_UPPER}}_JWT_SECRET]]
+JWT_SECRET={{JWT_SECRET}}
 
 # TENANT_CONFIG_KEY encrypts data AT REST — tenant config, integration credentials, SMTP credentials
 # (backend/services/{TenantConfigService,TenantLocalConfigService,SmtpServerService}.js,

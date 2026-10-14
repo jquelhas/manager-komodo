@@ -17,6 +17,7 @@
 #   scripts/setup-app-env.sh --apply --force     # also overwrite non-empty environments
 #   scripts/setup-app-env.sh --apply --only segcore-demo
 #   scripts/setup-app-env.sh --print segcore-demo   # render the .env for one host, to stdout
+#                                                   (CONTAINS THAT HOST'S SECRETS IN CLEAR)
 #   scripts/setup-app-env.sh --vars-only --apply    # push Variables, touch no Repo
 #   scripts/setup-app-env.sh --set-on-pull --apply  # reset on_pull only, keep environments
 #
@@ -50,6 +51,7 @@ die()  { echo "${c_red}[x]${c_rst} $*" >&2; exit 1; }
 
 command -v jq   >/dev/null || die "jq is required"
 command -v curl >/dev/null || die "curl is required"
+command -v openssl >/dev/null || die "openssl is required (per-host secrets)"
 
 APPLY=0; FORCE=0; VARS_ONLY=0; SET_ON_PULL=0; ONLY=""; PRINT_ONLY=""
 while [ $# -gt 0 ]; do
@@ -159,12 +161,29 @@ fi
 # ---------------------------------------------------------------------------
 # Only MESH_IP and HOSTNAME are derivable. Anything else per-host stays CHANGE_ME by design, and
 # blocks --apply until the operator fills it in.
+# CARRY THE PER-HOST SECRETS OVER, NEVER MINT OVER A LIVE HOST. {{JWT_SECRET}} and {{DB_PASSWORD}}
+# are literals in the environment (see provisioning/app-env.template, 2026-10-14), so re-rendering
+# the template for a host that already has an environment MUST reuse what is in it. Minting fresh
+# ones under --force would log everyone out and, worse, hand the app a DB_PASSWORD that disagrees
+# with the password that host's Postgres cluster was initialised with -- locking it out of its own
+# database, which is precisely the failure the per-host value exists to make impossible.
+# New ones are generated only when there is nothing to carry over, i.e. a genuinely fresh seed.
 render() {
-  local mesh_ip="$1" hostname="$2" upper
-  # {{HOST_UPPER}} feeds the per-host Variable names, e.g. [[DEMO_JWT_SECRET]]. Kept identical to
-  # host_upper() in provisioning/server.py, which names them at onboarding.
+  local mesh_ip="$1" hostname="$2" current="${3:-}" upper jwt db out
+  # {{HOST_UPPER}} is no longer used by the template, but stays available for a host-specific
+  # override written by hand. Kept identical to host_upper() in provisioning/server.py.
   upper="$(tr '[:lower:]' '[:upper:]' <<<"$hostname" | sed 's/[^A-Z0-9_]/_/g')"
-  sed -e "s|{{MESH_IP}}|$mesh_ip|g" -e "s|{{HOSTNAME}}|$hostname|g" -e "s|{{HOST_UPPER}}|$upper|g" "$TEMPLATE"
+  jwt="$(sed -n 's/^JWT_SECRET=//p' <<<"$current" | head -n1)"
+  db="$(sed -n 's/^DB_PASSWORD=//p' <<<"$current" | head -n1)"
+  [ -n "$jwt" ] || jwt="$(openssl rand -hex 32)"
+  [ -n "$db" ]  || db="$(openssl rand -hex 32)"
+  out="$(sed -e "s|{{MESH_IP}}|$mesh_ip|g" -e "s|{{HOSTNAME}}|$hostname|g" -e "s|{{HOST_UPPER}}|$upper|g" "$TEMPLATE")"
+  # Bash substitution and not sed for these two: a carried-over value is whatever is in the UI, and
+  # an & or | in it would corrupt a sed replacement. The replacement is quoted because since bash
+  # 5.2 an unquoted & expands to the matched text -- the same trap lint() documents below.
+  out="${out//'{{JWT_SECRET}}'/"$jwt"}"
+  out="${out//'{{DB_PASSWORD}}'/"$db"}"
+  printf '%s\n' "$out"
 }
 
 # Every [[NAME]] must resolve at deploy time, or Komodo writes it through literally (it does not
@@ -226,6 +245,14 @@ lint() {
       rc=1 ;;
     esac
   done <<<"$assignments"
+
+  # An unsubstituted {{NAME}} is not like a [[NAME]]: nothing downstream resolves it, so it would
+  # land in the .env verbatim. Hard failure, not a warning.
+  if grep -q '{{' <<<"$assignments"; then
+    echo "${c_red}    unsubstituted {{...}} placeholder${c_rst} — nothing resolves these; render() must fill them"
+    grep -n '{{' <<<"$assignments" | sed 's/^/      /'
+    rc=1
+  fi
 
   if grep -q 'CHANGE_ME' <<<"$assignments"; then
     echo "${c_yel}    CHANGE_ME to fill in the Komodo UI${c_rst} (Repos -> $repo_name -> Environment):"
@@ -294,7 +321,7 @@ while IFS=$'\t' read -r repo_name kind; do
   host="${repo_name#"$APP_TAG"-}"
   [ -n "$mesh_ip" ] || { warn "$repo_name: no mesh IP on its Server — skipped"; rc=1; continue; }
 
-  rendered="$(render "$mesh_ip" "$host")"
+  rendered="$(render "$mesh_ip" "$host" "$current")"
 
   if [ -n "$PRINT_ONLY" ]; then printf '%s\n' "$rendered"; exit 0; fi
 
