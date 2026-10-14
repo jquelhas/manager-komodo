@@ -21,7 +21,30 @@ entryPoints:
   # DEPOIS: acrescentar o port-publish "100.64.0.1:443:8443" no docker-compose.yml — sem tocar aqui.
   websecure-internal:
     address: ":8443"
-  # NOTA: sem entrypoint ":80" — porto 80 fechado no firewall; TLS-ALPN-01 só precisa do 443.
+  # REDIRECT INTERNO: escuta :80 dentro do container, publicado só em 100.64.0.1:80 (ver
+  # docker-compose.yml). Não serve router nenhum — só redirecciona para HTTPS.
+  #
+  # Porque existe: escrever `http://home.apps.internal` dá "connection refused", sem pista nenhuma,
+  # num nome que resolve e num serviço que está de pé. Custou duas sessões de diagnóstico (2026-09-19
+  # e 2026-10-14) à mesma pessoa que escreveu isto. Vale para todas as UIs internas, não só a
+  # Homepage.
+  #
+  # `to: ":443"` E NÃO `to: websecure-internal`, que é a forma óbvia e está errada. O
+  # RedirectEntryPoint do Traefik v3.7 não tem campo `port` (pkg/config/static/entrypoints.go: só
+  # To, Scheme, Permanent, Priority), por isso apontar ao NOME do entrypoint faz o redirect herdar
+  # a porta dele — :8443, que é onde escuta dentro do container e não onde está publicado. O browser
+  # ia parar a https://host:8443 e falhava. A documentação diz que o alvo "can be an entry point
+  # name (ex: websecure), or a port (:443)", e é a segunda forma que serve aqui.
+  web-internal:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: ":443"
+          scheme: https
+          permanent: true
+  # NOTA: o :80 acima NÃO é público. A allowlist da firewall externa continua a ser 443/tcp,
+  # 41641/udp e 60022/tcp, e o TLS-ALPN-01 do entrypoint público continua a só precisar do 443.
 
 certificatesResolvers:
   # ---- PÚBLICO: Let's Encrypt via TLS-ALPN-01 (só 443, sem porto 80, sem API DNS) ----

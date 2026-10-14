@@ -98,6 +98,7 @@ services:
       # Público no IP específico (não 0.0.0.0) para coexistir com o interno no mesmo porto 443.
       - "${PUBLIC_IP}:443:443"              # websecure-public (internet)
       - "100.64.0.1:443:8443"               # websecure-internal, só mesh (Tailscale IP do host)
+      - "100.64.0.1:80:80"                  # web-internal: redirect http->https, só mesh
     volumes:
       # No docker.sock here — Traefik reads the Docker API via socket-proxy (tcp, read-only).
       - ./docker/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
