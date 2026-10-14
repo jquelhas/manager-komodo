@@ -57,7 +57,7 @@
 #
 # A host that needs a different value is the EXCEPTION, and is handled in that Repo's Environment in
 # the Komodo UI: replace [[NAME]] with the literal value, or with a host-specific Variable
-# (JWT_SECRET=[[HOST1_JWT_SECRET]]) to keep it out of read/GetRepo, which returns literals in clear
+# (JWT_SECRET=[[<HOST>_JWT_SECRET]]) to keep it out of read/GetRepo, which returns literals in clear
 # to anyone with read access. Do NOT try to override by putting the same name in the host's periphery
 # [secrets]: Core interpolates first and the periphery never sees it.
 #
